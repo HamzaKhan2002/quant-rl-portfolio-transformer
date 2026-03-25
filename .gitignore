@@ -1,0 +1,32 @@
+# Environment variables — never commit real paths or secrets
+.env
+
+# Data files — must be sourced from upstream sibling repos via env vars
+data/*.csv
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Outputs — model weights and eval artifacts
+output/trained_model/
+output/*.json
+output/*.csv
+output/*.png
+output/*.pkl
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
