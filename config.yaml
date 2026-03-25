@@ -1,0 +1,54 @@
+tickers:
+  - AAPL
+  - MSFT
+  - GOOGL
+  - AMZN
+  - TSLA
+
+data:
+  sentiment_path: "${SENTIMENT_FEATURES_PATH}"
+  regime_path: "${REGIME_PROBS_PATH}"
+
+splits:
+  train_start: "2022-01-03"
+  train_end:   "2023-12-31"
+  val_start:   "2024-01-01"
+  val_end:     "2024-12-31"
+  test_start:  "2025-01-01"
+  test_end:    "2025-12-31"
+
+env:
+  n_tickers: 5
+  n_per_ticker_features: 14
+  n_shared_features: 4
+  obs_dim: 74            # 5 * 14 + 4
+  action_dim: 6          # 5 tickers + 1 cash
+  transaction_cost: 0.001  # lambda: 10 bps per unit of weight turnover
+  vol_eps: 1.0e-8
+  vol_window: 21
+
+ppo:
+  policy: "MlpPolicy"
+  learning_rate: 3.0e-4
+  n_steps: 252           # 1 trading year of rollout per update
+  batch_size: 64
+  n_epochs: 10
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.01         # entropy bonus — encourages weight-space exploration
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  policy_kwargs:
+    net_arch: [256, 256]
+    activation_fn: "Tanh"
+  total_timesteps: 500000
+  eval_freq: 10000
+  checkpoint_freq: 50000
+
+output:
+  dir: "output"
+  model_dir: "output/trained_model"
+  metrics_file: "output/eval_metrics.json"
+  weights_file: "output/portfolio_weights.csv"
+  curves_file:  "output/training_curves.png"
