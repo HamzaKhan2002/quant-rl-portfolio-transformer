@@ -2,7 +2,7 @@
 portfolio_env.py — Custom Gymnasium environment for PPO portfolio allocation.
 
 Observation space : Box(shape=(74,))   — 5×14 per-ticker + 4 shared regime
-Action space      : Box(low=0, high=1, shape=(6,)) — raw logits for softmax
+Action space      : Box(low=-20, high=20, shape=(6,)) — raw logits for softmax
                     → projected to probability simplex (5 tickers + 1 cash)
 
 Reward (strictly from approved design — no additional shaping):
@@ -74,7 +74,9 @@ class PortfolioEnv(gym.Env):
         self.vol_eps:    float = float(env_cfg["vol_eps"])
         self.vol_window: int   = int(env_cfg["vol_window"])
 
-        self._n_steps = obs_array.shape[0]
+        # Last row of forward_return_array is 0-filled (shift(-1).fillna(0));
+        # stop one step early so every step has a real forward return.
+        self._n_steps = obs_array.shape[0] - 1
 
         # Gymnasium spaces
         self.observation_space = spaces.Box(
@@ -84,8 +86,8 @@ class PortfolioEnv(gym.Env):
             dtype=np.float32,
         )
         self.action_space = spaces.Box(
-            low=0.0,
-            high=1.0,
+            low=-20.0,
+            high=20.0,
             shape=(self.action_dim,),
             dtype=np.float32,
         )
@@ -94,6 +96,7 @@ class PortfolioEnv(gym.Env):
         self._t: int = 0
         self._prev_weights = np.zeros(self.action_dim, dtype=np.float32)
         self._return_buffer = np.zeros(self.vol_window, dtype=np.float64)
+        self._buffer_count: int = 0
 
     # ------------------------------------------------------------------
     # Gymnasium API
@@ -112,6 +115,7 @@ class PortfolioEnv(gym.Env):
         self._prev_weights = np.zeros(self.action_dim, dtype=np.float32)
         self._prev_weights[: self.n_tickers] = 1.0 / self.n_tickers
         self._return_buffer = np.zeros(self.vol_window, dtype=np.float64)
+        self._buffer_count = 0
 
         return self.obs_array[0].copy(), {}
 
@@ -124,7 +128,7 @@ class PortfolioEnv(gym.Env):
         Parameters
         ----------
         action : np.ndarray, shape (6,)
-            Raw agent output in [0, 1]^6.  Projected to the probability
+            Raw agent output (R^6 logits).  Projected to the probability
             simplex via softmax before use.
 
         Returns
@@ -142,9 +146,13 @@ class PortfolioEnv(gym.Env):
         # 3. Update rolling portfolio return buffer (FIFO)
         self._return_buffer = np.roll(self._return_buffer, -1)
         self._return_buffer[-1] = port_return
+        self._buffer_count = min(self._buffer_count + 1, self.vol_window)
 
-        # 4. Rolling portfolio volatility
-        roll_vol = float(np.std(self._return_buffer))
+        # 4. Rolling portfolio volatility (only over filled portion of buffer)
+        if self._buffer_count < 2:
+            roll_vol = 0.0
+        else:
+            roll_vol = float(np.std(self._return_buffer[-self._buffer_count:]))
 
         # 5. Transaction cost (L1 weight turnover)
         turnover = float(np.sum(np.abs(weights - self._prev_weights)))

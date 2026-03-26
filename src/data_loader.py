@@ -1,10 +1,10 @@
 """
 data_loader.py — Load and merge Phase 1 regime + Phase 2 sentiment features.
 
-Paths to upstream CSV files are resolved exclusively from environment variables
-(SENTIMENT_FEATURES_PATH, REGIME_PROBS_PATH).  If either variable is unset or
-the resolved path does not exist, a FileNotFoundError is raised immediately at
-startup — no silent fallback.
+Paths to upstream CSV files are read directly from config.yaml as relative
+paths from the repo root (deps/ submodules).  No environment variables are
+used.  If a file is missing the likely cause is an uninitialised submodule, and
+the error message tells the user exactly how to fix it.
 
 Merge recipe follows CONTEXT.md §3:
   - Inner join on Date (drops ~38 US holiday rows present in sentiment but
@@ -36,23 +36,20 @@ def load_config(path: str = "config.yaml") -> dict:
 # Path resolution
 # ---------------------------------------------------------------------------
 
-def _resolve_path(template: str, var_name: str) -> str:
+def _resolve_path(path: str) -> str:
     """
-    Expand environment variables in *template* and verify the file exists.
+    Verify that *path* exists and return it unchanged.
 
     Raises
     ------
     FileNotFoundError
-        If the expanded path does not point to an existing file.  The error
-        message names the expected environment variable so the user knows
-        exactly what to set.
+        If the path does not point to an existing file.  The error message
+        includes a submodule hint so the user knows how to fix it.
     """
-    path = os.path.expandvars(template)
     if not os.path.exists(path):
         raise FileNotFoundError(
-            f"File not found at: {path}\n"
-            f"Set the {var_name} environment variable to a valid file path.\n"
-            f"See .env.example at the repo root for reference."
+            f"File not found: {path}\n"
+            f"Run: git submodule update --init --recursive"
         )
     return path
 
@@ -70,8 +67,8 @@ def load_merged_features(config: dict) -> pd.DataFrame:
     ----------
     config : dict
         Loaded config.yaml.  ``config["data"]["sentiment_path"]`` and
-        ``config["data"]["regime_path"]`` must contain ``${...}`` env-var
-        references.
+        ``config["data"]["regime_path"]`` are paths relative to the repo root
+        (populated from the deps/ submodules by default).
 
     Returns
     -------
@@ -82,20 +79,17 @@ def load_merged_features(config: dict) -> pd.DataFrame:
     Raises
     ------
     FileNotFoundError
-        If either upstream file is missing (see ``_resolve_path``).
+        If either upstream file is missing.  Run
+        ``git submodule update --init --recursive`` to populate deps/.
     """
-    sentiment_path = _resolve_path(
-        config["data"]["sentiment_path"], "SENTIMENT_FEATURES_PATH"
-    )
-    regime_path = _resolve_path(
-        config["data"]["regime_path"], "REGIME_PROBS_PATH"
-    )
+    sentiment_path = _resolve_path(config["data"]["sentiment_path"])
+    regime_path    = _resolve_path(config["data"]["regime_path"])
 
     sentiment = pd.read_csv(sentiment_path)
-    regime = pd.read_csv(regime_path)
+    regime    = pd.read_csv(regime_path)
 
     sentiment["Date"] = pd.to_datetime(sentiment["Date"])
-    regime["Date"] = pd.to_datetime(regime["Date"])
+    regime["Date"]    = pd.to_datetime(regime["Date"])
 
     # Inner merge — drops ~38 US holiday dates that appear in sentiment
     # (generated with freq="B" which includes bank holidays) but are absent

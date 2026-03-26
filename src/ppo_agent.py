@@ -6,7 +6,7 @@ Wraps stable-baselines3 PPO with the hyper-parameters from config.yaml.
 
 from __future__ import annotations
 
-from typing import List
+from typing import Callable, List
 
 import torch
 
@@ -17,7 +17,6 @@ try:
         CheckpointCallback,
         EvalCallback,
     )
-    from stable_baselines3.common.monitor import Monitor
 except ImportError as exc:
     raise ImportError(
         "stable-baselines3 >= 2.3.0 is required.  "
@@ -36,6 +35,23 @@ _ACTIVATION_FN_MAP = {
     "ReLU": torch.nn.ReLU,
     "ELU":  torch.nn.ELU,
 }
+
+
+# ---------------------------------------------------------------------------
+# Learning rate schedule
+# ---------------------------------------------------------------------------
+
+def linear_schedule(initial_value: float) -> Callable[[float], float]:
+    """
+    Return a callable that linearly anneals the learning rate from
+    *initial_value* down to 0 over the course of training.
+
+    The returned function maps ``progress_remaining`` (1.0 → 0.0) to the
+    current learning rate.
+    """
+    def fn(progress_remaining: float) -> float:
+        return progress_remaining * initial_value
+    return fn
 
 
 # ---------------------------------------------------------------------------
@@ -73,10 +89,18 @@ def make_ppo(env: PortfolioEnv, config: dict, seed: int = 0) -> PPO:
         "activation_fn": _ACTIVATION_FN_MAP[activation_name],
     }
 
+    # Learning rate: flat float or linear annealing schedule
+    lr_value = float(ppo_cfg["learning_rate"])
+    lr_schedule_name = ppo_cfg.get("lr_schedule", "constant")
+    if lr_schedule_name == "linear":
+        learning_rate = linear_schedule(lr_value)
+    else:
+        learning_rate = lr_value
+
     return PPO(
         policy         = ppo_cfg["policy"],
         env            = env,
-        learning_rate  = float(ppo_cfg["learning_rate"]),
+        learning_rate  = learning_rate,
         n_steps        = int(ppo_cfg["n_steps"]),
         batch_size     = int(ppo_cfg["batch_size"]),
         n_epochs       = int(ppo_cfg["n_epochs"]),
@@ -126,7 +150,7 @@ def make_callbacks(
     ppo_cfg = config["ppo"]
 
     eval_cb = EvalCallback(
-        eval_env          = Monitor(val_env),
+        eval_env          = val_env,
         best_model_save_path = model_dir,
         log_path          = model_dir,
         eval_freq         = int(ppo_cfg["eval_freq"]),

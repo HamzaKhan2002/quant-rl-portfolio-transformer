@@ -2,8 +2,8 @@
 tests/test_data_loader.py — Unit tests for src/data_loader.py.
 
 All tests are fully self-contained: they create synthetic CSV fixtures in
-tmp_path and monkeypatch environment variables.  No upstream data files or
-network access are required.
+tmp_path.  No upstream data files, environment variables, or network access
+are required.
 """
 
 from __future__ import annotations
@@ -119,31 +119,31 @@ class TestResolvePath:
     def test_existing_file_returns_path(self, tmp_path):
         f = tmp_path / "data.csv"
         f.write_text("col\n1\n")
-        result = _resolve_path(str(f), "SOME_VAR")
+        result = _resolve_path(str(f))
         assert result == str(f)
 
     def test_missing_file_raises(self, tmp_path):
         missing = str(tmp_path / "nonexistent.csv")
-        with pytest.raises(FileNotFoundError, match="SOME_VAR"):
-            _resolve_path(missing, "SOME_VAR")
+        with pytest.raises(FileNotFoundError, match="submodule"):
+            _resolve_path(missing)
 
-    def test_unset_env_var_raises(self, monkeypatch):
-        monkeypatch.delenv("SENTIMENT_FEATURES_PATH", raising=False)
-        with pytest.raises(FileNotFoundError, match="SENTIMENT_FEATURES_PATH"):
-            _resolve_path("${SENTIMENT_FEATURES_PATH}", "SENTIMENT_FEATURES_PATH")
+    def test_error_message_contains_missing_path(self, tmp_path):
+        missing = str(tmp_path / "some_file.csv")
+        with pytest.raises(FileNotFoundError) as exc_info:
+            _resolve_path(missing)
+        assert "some_file.csv" in str(exc_info.value)
 
-    def test_env_var_set_but_file_missing_raises(self, monkeypatch, tmp_path):
-        missing = str(tmp_path / "gone.csv")
-        monkeypatch.setenv("SENTIMENT_FEATURES_PATH", missing)
-        with pytest.raises(FileNotFoundError, match="SENTIMENT_FEATURES_PATH"):
-            _resolve_path("${SENTIMENT_FEATURES_PATH}", "SENTIMENT_FEATURES_PATH")
+    def test_error_message_contains_submodule_command(self, tmp_path):
+        missing = str(tmp_path / "any.csv")
+        with pytest.raises(FileNotFoundError) as exc_info:
+            _resolve_path(missing)
+        assert "git submodule update --init --recursive" in str(exc_info.value)
 
-    def test_env_var_set_and_file_exists(self, monkeypatch, tmp_path):
+    def test_path_returned_unchanged_when_exists(self, tmp_path):
         f = tmp_path / "data.csv"
-        f.write_text("col\n1\n")
-        monkeypatch.setenv("SENTIMENT_FEATURES_PATH", str(f))
-        result = _resolve_path("${SENTIMENT_FEATURES_PATH}", "SENTIMENT_FEATURES_PATH")
-        assert result == str(f)
+        f.write_text("x\n")
+        path_str = str(f)
+        assert _resolve_path(path_str) is path_str
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +180,15 @@ class TestLoadConfig:
         s = cfg["splits"]
         assert s["train_end"] < s["val_start"]
         assert s["val_end"] < s["test_start"]
+
+    def test_real_config_data_paths_are_submodule_paths(self):
+        """config.yaml must point to deps/ submodule paths, not env vars."""
+        cfg_path = Path(__file__).parent.parent / "config.yaml"
+        cfg = load_config(str(cfg_path))
+        assert cfg["data"]["sentiment_path"].startswith("deps/")
+        assert cfg["data"]["regime_path"].startswith("deps/")
+        assert "${" not in cfg["data"]["sentiment_path"]
+        assert "${" not in cfg["data"]["regime_path"]
 
 
 # ---------------------------------------------------------------------------
@@ -254,14 +263,14 @@ class TestLoadMergedFeatures:
             str(tmp_path / "missing_sentiment.csv"),
             str(tmp_path / "missing_regime.csv"),
         )
-        with pytest.raises(FileNotFoundError, match="SENTIMENT_FEATURES_PATH"):
+        with pytest.raises(FileNotFoundError, match="submodule"):
             load_merged_features(cfg)
 
     def test_missing_regime_file_raises(self, tmp_path):
         dates = ["2022-01-03"]
         s_path, _ = _write_csvs(tmp_path, dates, dates)
         cfg = _make_config(s_path, str(tmp_path / "missing_regime.csv"))
-        with pytest.raises(FileNotFoundError, match="REGIME_PROBS_PATH"):
+        with pytest.raises(FileNotFoundError, match="submodule"):
             load_merged_features(cfg)
 
     def test_date_column_is_datetime(self, tmp_path):

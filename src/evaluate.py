@@ -14,15 +14,17 @@ Baselines compared:
   1. Equal-weight buy-and-hold  (1/n_tickers each, never rebalanced)
   2. Equal-weight monthly rebalance
   3. Max-Sharpe portfolio (mean-variance optimisation on train data, held fixed)
+  4. 60/40 SPY/AGG (monthly rebalance, requires yfinance network access)
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
-from typing import Dict, Sequence
+from typing import Dict
 
 import numpy as np
 import pandas as pd
@@ -83,6 +85,66 @@ def _mean_daily_turnover(weights: np.ndarray) -> float:
     return float(diffs.mean())
 
 
+def bootstrap_ci(
+    daily_returns: np.ndarray,
+    metric_fn,
+    n_bootstrap: int = 10_000,
+    ci: float = 0.95,
+    block_size: int = 21,
+    seed: int = 42,
+) -> tuple[float, float]:
+    """
+    Block bootstrap confidence interval for a portfolio metric.
+
+    Uses non-overlapping block resampling (default block_size=21 = 1 trading
+    month) to preserve the autocorrelation structure of financial returns.
+    This avoids the bias of iid resampling on time-series data.
+
+    Parameters
+    ----------
+    daily_returns : np.ndarray, shape (T,)
+        Daily simple returns of the portfolio.
+    metric_fn : callable
+        Function (daily_returns → float) to compute the metric.
+    n_bootstrap : int
+        Number of bootstrap re-samples.
+    ci : float
+        Confidence level (e.g. 0.95 for 95%).
+    block_size : int
+        Block length for block bootstrap (default 21 = 1 trading month).
+    seed : int
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    (lower, upper) : tuple of float
+        Lower and upper bounds of the confidence interval.
+    """
+    rng = np.random.default_rng(seed)
+    T = len(daily_returns)
+
+    # Build blocks: divide the time series into non-overlapping blocks
+    n_blocks = math.ceil(T / block_size)
+    block_starts = np.arange(0, T, block_size)  # start indices of each block
+
+    stats = np.empty(n_bootstrap)
+    for i in range(n_bootstrap):
+        # Resample blocks with replacement
+        chosen = rng.integers(0, len(block_starts), size=n_blocks)
+        pieces = []
+        for c in chosen:
+            start = block_starts[c]
+            end = min(start + block_size, T)
+            pieces.append(daily_returns[start:end])
+        resampled = np.concatenate(pieces)[:T]  # trim to original length
+        stats[i] = metric_fn(resampled)
+
+    alpha = (1.0 - ci) / 2.0
+    lower = float(np.percentile(stats, 100 * alpha))
+    upper = float(np.percentile(stats, 100 * (1 - alpha)))
+    return lower, upper
+
+
 def compute_metrics(
     daily_returns: np.ndarray,
     weights: np.ndarray,
@@ -123,9 +185,26 @@ def compute_metrics(
 def run_equal_weight_buyhold(
     return_array: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """1/n equal-weight buy-and-hold. No rebalancing."""
+    """
+    1/n equal-weight buy-and-hold.  Weights drift with realised returns
+    and are never rebalanced.
+
+    weights[t] is the beginning-of-period allocation that earns return_array[t].
+    After each step, weights drift: w *= (1 + r) then renormalize.
+    """
     n = return_array.shape[1]
-    weights = np.full((len(return_array), n), 1.0 / n, dtype=np.float32)
+    T = len(return_array)
+    weights = np.zeros((T, n), dtype=np.float32)
+    current_weights = np.full(n, 1.0 / n, dtype=np.float32)
+
+    for t in range(T):
+        weights[t] = current_weights
+        # Drift weights with realised returns (buy-and-hold: never rebalance)
+        raw = current_weights * (1.0 + return_array[t])
+        total = raw.sum()
+        if total > 1e-8:
+            current_weights = raw / total
+
     port_returns = (weights * return_array).sum(axis=1)
     return port_returns, weights
 
@@ -198,6 +277,113 @@ def run_max_sharpe(
     return port_returns, weights
 
 
+def _run_sixty_forty_from_returns(
+    spy_returns: np.ndarray,
+    agg_returns: np.ndarray,
+    dates: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Inner (testable) implementation of 60/40 SPY/AGG with monthly rebalancing.
+
+    Parameters
+    ----------
+    spy_returns : np.ndarray, shape (T,)
+        Daily simple returns of SPY.
+    agg_returns : np.ndarray, shape (T,)
+        Daily simple returns of AGG.
+    dates : np.ndarray of datetime64
+        Business dates aligned with the return arrays.
+
+    Returns
+    -------
+    port_returns : np.ndarray, shape (T,)
+    weights : np.ndarray, shape (T, 2)
+        Columns: [SPY_weight, AGG_weight], sum to 1.0.
+    """
+    T = len(spy_returns)
+    return_array = np.column_stack([spy_returns, agg_returns])
+    weights = np.zeros((T, 2), dtype=np.float32)
+    current_weights = np.array([0.6, 0.4], dtype=np.float32)
+    current_month = -1
+
+    timestamps = pd.DatetimeIndex(dates)
+
+    for t in range(T):
+        month = timestamps[t].month if t < len(timestamps) else current_month
+        if month != current_month:
+            current_weights = np.array([0.6, 0.4], dtype=np.float32)
+            current_month = month
+        weights[t] = current_weights
+        # Drift weights with realised returns
+        raw = current_weights * (1.0 + return_array[t])
+        total = raw.sum()
+        if total > 1e-8:
+            current_weights = raw / total
+
+    port_returns = (weights * return_array).sum(axis=1)
+    return port_returns, weights
+
+
+def run_sixty_forty_spy_agg(
+    test_dates: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    60% SPY / 40% AGG (iShares Core US Aggregate Bond ETF), rebalanced monthly.
+
+    Fetches SPY and AGG prices via yfinance for the test period.  Between
+    monthly rebalance dates, weights drift with returns.  At each month-end
+    boundary, reset to 60/40.
+
+    Parameters
+    ----------
+    test_dates : np.ndarray of datetime64
+        Business dates for the test period.
+
+    Returns
+    -------
+    port_returns : np.ndarray, shape (T,)
+    weights : np.ndarray, shape (T, 2)
+    """
+    import warnings
+
+    try:
+        import yfinance as yf
+    except ImportError as exc:
+        raise ImportError(
+            "yfinance is required for the 60/40 SPY/AGG baseline.  "
+            "Install with: pip install yfinance"
+        ) from exc
+
+    # Date range with buffer for first-day return computation
+    start = (pd.Timestamp(test_dates[0]) - pd.offsets.BDay(5)).strftime("%Y-%m-%d")
+    end = (pd.Timestamp(test_dates[-1]) + pd.offsets.BDay(1)).strftime("%Y-%m-%d")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        raw = yf.download(
+            ["SPY", "AGG"], start=start, end=end,
+            auto_adjust=True, progress=False,
+        )
+
+    if isinstance(raw.columns, pd.MultiIndex):
+        prices = raw["Close"][["SPY", "AGG"]]
+    else:
+        prices = raw[["Close"]].rename(columns={"Close": "SPY"})
+
+    # Compute daily simple returns
+    returns = (prices / prices.shift(1) - 1.0).dropna()
+    returns.index = pd.to_datetime(returns.index)
+
+    # Align to test_dates
+    test_idx = pd.DatetimeIndex(test_dates)
+    aligned = returns.reindex(test_idx).fillna(0.0)
+
+    spy_ret = aligned["SPY"].values.astype(np.float32)
+    agg_ret = aligned["AGG"].values.astype(np.float32)
+
+    return _run_sixty_forty_from_returns(spy_ret, agg_ret, test_dates)
+
+
 # ---------------------------------------------------------------------------
 # Main evaluation entrypoint
 # ---------------------------------------------------------------------------
@@ -222,18 +408,18 @@ def main(config_path: str = "config.yaml") -> None:
     os.makedirs(out_cfg["dir"], exist_ok=True)
 
     # 2. Load data for all splits -------------------------------------------
-    print("Loading merged features …")
+    print("Loading merged features ...")
     merged_df = load_merged_features(config)
     train_df, _, test_df = split_data(merged_df, config)
 
-    print("Fetching price data …")
+    print("Fetching price data ...")
     prices = fetch_price_data(
         tickers,
         start_date = splits["train_start"],
         end_date   = splits["test_end"],
     )
 
-    print("Computing price features …")
+    print("Computing price features ...")
     price_features = compute_price_features(prices, tickers)
 
     # 3. Build observation matrices -----------------------------------------
@@ -261,7 +447,7 @@ def main(config_path: str = "config.yaml") -> None:
             f"Model not found at {model_path}.zip.  "
             "Run train.py first."
         )
-    print(f"Loading model from {model_path}.zip …")
+    print(f"Loading model from {model_path}.zip ...")
     model = PPO.load(model_path)
 
     # 6. Roll out PPO on test set -------------------------------------------
@@ -281,20 +467,44 @@ def main(config_path: str = "config.yaml") -> None:
     ppo_weights = np.array(ppo_weights, dtype=np.float32)
 
     # 7. Compute metrics for PPO and all baselines --------------------------
-    print("Computing evaluation metrics …")
+    print("Computing evaluation metrics ...")
 
-    results = [
-        compute_metrics(ppo_returns, ppo_weights, label="ppo"),
-        compute_metrics(*run_equal_weight_buyhold(test_ret), label="equal_weight_buyhold"),
-        compute_metrics(*run_equal_weight_monthly(test_ret, test_dates), label="equal_weight_monthly"),
-        compute_metrics(*run_max_sharpe(train_ret, test_ret), label="max_sharpe"),
+    # Collect all strategy returns + weights for metrics and bootstrap
+    strategies = [
+        ("ppo", ppo_returns, ppo_weights),
+        ("equal_weight_buyhold", *run_equal_weight_buyhold(test_ret)),
+        ("equal_weight_monthly", *run_equal_weight_monthly(test_ret, test_dates)),
+        ("max_sharpe", *run_max_sharpe(train_ret, test_ret)),
     ]
+
+    # 60/40 SPY/AGG baseline (requires yfinance / network access)
+    try:
+        sf_ret, sf_wt = run_sixty_forty_spy_agg(test_dates)
+        strategies.append(("sixty_forty_spy_bonds", sf_ret, sf_wt))
+    except Exception as e:
+        print(f"Warning: 60/40 SPY/AGG baseline skipped — {e}")
+
+    results = []
+    for label, rets, wts in strategies:
+        m = compute_metrics(rets, wts, label=label)
+
+        # Bootstrap CIs for Sharpe, Sortino, and annualized return
+        sharpe_lo, sharpe_hi = bootstrap_ci(rets, _annualised_sharpe)
+        sortino_lo, sortino_hi = bootstrap_ci(rets, _annualised_sortino)
+        ann_ret_lo, ann_ret_hi = bootstrap_ci(rets, _annualised_return)
+        m["sharpe_ci_lower"] = round(sharpe_lo, 6)
+        m["sharpe_ci_upper"] = round(sharpe_hi, 6)
+        m["sortino_ci_lower"] = round(sortino_lo, 6)
+        m["sortino_ci_upper"] = round(sortino_hi, 6)
+        m["ann_return_ci_lower"] = round(ann_ret_lo, 6)
+        m["ann_return_ci_upper"] = round(ann_ret_hi, 6)
+        results.append(m)
 
     # 8. Save metrics --------------------------------------------------------
     metrics_path = out_cfg["metrics_file"]
     with open(metrics_path, "w") as fh:
         json.dump(results, fh, indent=2)
-    print(f"Metrics saved → {metrics_path}")
+    print(f"Metrics saved -> {metrics_path}")
 
     # Print summary table
     print("\n" + "=" * 72)
@@ -320,7 +530,7 @@ def main(config_path: str = "config.yaml") -> None:
     )
     weight_df.index.name = "Date"
     weight_df.to_csv(out_cfg["weights_file"])
-    print(f"Daily weights saved → {out_cfg['weights_file']}")
+    print(f"Daily weights saved -> {out_cfg['weights_file']}")
 
 
 if __name__ == "__main__":

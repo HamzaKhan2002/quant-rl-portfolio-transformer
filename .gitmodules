@@ -1,0 +1,9 @@
+[submodule "deps/quant-shared-utils"]
+	path = deps/quant-shared-utils
+	url = https://github.com/HamzaKhan2002/quant-shared-utils
+[submodule "deps/quant-multi-transformer-regimes"]
+	path = deps/quant-multi-transformer-regimes
+	url = https://github.com/HamzaKhan2002/quant-multi-transformer-regimes
+[submodule "deps/quant-nlp-claude-grok-sentiment"]
+	path = deps/quant-nlp-claude-grok-sentiment
+	url = https://github.com/HamzaKhan2002/quant-nlp-claude-grok-sentiment

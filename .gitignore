@@ -1,8 +1,5 @@
-# Environment variables — never commit real paths or secrets
-.env
-
-# Data files — must be sourced from upstream sibling repos via env vars
-data/*.csv
+# Submodule checkouts — contents tracked by the upstream repos
+deps/
 
 # Python bytecode
 __pycache__/

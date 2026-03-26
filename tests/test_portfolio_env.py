@@ -64,8 +64,8 @@ class TestSpaces:
 
     def test_action_space_bounds(self):
         env = _make_env()
-        assert env.action_space.low[0]  == 0.0
-        assert env.action_space.high[0] == 1.0
+        np.testing.assert_allclose(env.action_space.low, -20.0, atol=1e-6)
+        np.testing.assert_allclose(env.action_space.high, 20.0, atol=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +145,7 @@ class TestStep:
     def test_not_terminated_before_end(self):
         env = _make_env(T=10)
         env.reset()
-        for _ in range(9):
+        for _ in range(8):  # T-1 = 9 episode steps; first 8 are non-terminal
             _, _, terminated, _, _ = env.step(env.action_space.sample())
             assert not terminated
 
@@ -153,7 +153,7 @@ class TestStep:
         env = _make_env(T=10)
         env.reset()
         terminated = False
-        for _ in range(10):
+        for _ in range(9):  # episode length = T-1 = 9
             _, _, terminated, _, _ = env.step(env.action_space.sample())
         assert terminated
 
@@ -168,7 +168,7 @@ class TestStep:
         Verify reward = port_return / (vol + eps) - lambda * turnover.
         Uses a deterministic single-step episode.
         """
-        T_ = 2
+        T_ = 3  # _n_steps = T-1 = 2; need at least 2 rows for one valid step
         # Obs and returns — simple values
         obs_array    = np.ones((T_, OBS_DIM), dtype=np.float32)
         return_array = np.full((T_, N_TICKERS), 0.01, dtype=np.float32)
