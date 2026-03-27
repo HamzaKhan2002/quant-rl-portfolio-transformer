@@ -69,6 +69,10 @@ def main(config_path: str = "config.yaml", use_tuned: bool = False, seed: int | 
         # Apply tc_penalty_lambda to env config, rest to ppo config
         if "tc_penalty_lambda" in tuned_params:
             config["env"]["transaction_cost"] = tuned_params.pop("tc_penalty_lambda")
+        if "lambda_dd" in tuned_params:
+            config["env"]["lambda_dd"] = tuned_params.pop("lambda_dd")
+        if "dd_threshold" in tuned_params:
+            config["env"]["dd_threshold"] = tuned_params.pop("dd_threshold")
         config["ppo"].update(tuned_params)
         print(f"Loaded tuned params from {tuned_path}")
 
@@ -180,6 +184,15 @@ def main(config_path: str = "config.yaml", use_tuned: bool = False, seed: int | 
         f"Best model (highest val reward) -> "
         f"{out_cfg['model_dir']}/best_model.zip"
     )
+
+    # 10a. Copy best_model to seed-specific name for ensemble use -----------
+    active_seed = int(config["training"]["seed"])
+    import shutil
+    seed_model_path = str(Path(out_cfg["model_dir"]) / f"best_model_seed_{active_seed}.zip")
+    best_model_src = str(Path(out_cfg["model_dir"]) / "best_model.zip")
+    if Path(best_model_src).exists():
+        shutil.copy2(best_model_src, seed_model_path)
+        print(f"Seed-specific model saved -> {seed_model_path}")
 
     # 10b. Save VecNormalize running statistics --------------------------------
     vec_norm_path = out_cfg.get(

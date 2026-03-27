@@ -222,7 +222,8 @@ class TestStep:
         env = _make_env()
         env.reset()
         _, _, _, _, info = env.step(env.action_space.sample())
-        for key in ["portfolio_return", "rolling_vol", "turnover", "weights", "step"]:
+        for key in ["portfolio_return", "rolling_vol", "turnover", "weights", "step",
+                     "current_drawdown"]:
             assert key in info, f"Missing info key: {key}"
 
     def test_step_advances_time(self):
@@ -284,3 +285,157 @@ class TestConstructor:
         ret    = np.zeros((15, N_TICKERS), dtype=np.float32)
         with pytest.raises(AssertionError):
             PortfolioEnv(obs, ret, _make_config())
+
+
+# ---------------------------------------------------------------------------
+# Drawdown penalty
+# ---------------------------------------------------------------------------
+
+def _make_config_with_dd(lambda_dd: float = 0.5, dd_threshold: float = 0.05) -> dict:
+    cfg = _make_config()
+    cfg["env"]["lambda_dd"] = lambda_dd
+    cfg["env"]["dd_threshold"] = dd_threshold
+    return cfg
+
+
+def _make_env_with_dd(T: int = T, seed: int = 0, lambda_dd: float = 0.5,
+                       dd_threshold: float = 0.05) -> PortfolioEnv:
+    rng = np.random.default_rng(seed)
+    obs_array = rng.standard_normal((T, OBS_DIM)).astype(np.float32)
+    return_array = rng.normal(0.001, 0.01, (T, N_TICKERS)).astype(np.float32)
+    return PortfolioEnv(obs_array, return_array,
+                        _make_config_with_dd(lambda_dd, dd_threshold))
+
+
+class TestDrawdownPenalty:
+
+    def test_drawdown_zero_when_portfolio_rising(self):
+        """With constant positive returns, drawdown should be 0.0."""
+        T_ = 10
+        obs_array = np.ones((T_, OBS_DIM), dtype=np.float32)
+        return_array = np.full((T_, N_TICKERS), 0.01, dtype=np.float32)
+        env = PortfolioEnv(obs_array, return_array,
+                           _make_config_with_dd(lambda_dd=1.0, dd_threshold=0.0))
+        env.reset()
+        action = np.full(ACTION_DIM, 0.5, dtype=np.float32)
+        for _ in range(T_ - 1):
+            _, _, _, _, info = env.step(action)
+            np.testing.assert_allclose(info["current_drawdown"], 0.0, atol=1e-8)
+
+    def test_drawdown_positive_after_loss(self):
+        """After a negative return, drawdown should become positive."""
+        T_ = 5
+        obs_array = np.ones((T_, OBS_DIM), dtype=np.float32)
+        return_array = np.zeros((T_, N_TICKERS), dtype=np.float32)
+        return_array[0] = 0.05   # first step: gain
+        return_array[1] = -0.10  # second step: loss
+        env = PortfolioEnv(obs_array, return_array,
+                           _make_config_with_dd(lambda_dd=1.0, dd_threshold=0.0))
+        env.reset()
+        action = np.full(ACTION_DIM, 0.5, dtype=np.float32)
+        env.step(action)  # gain step
+        _, _, _, _, info = env.step(action)  # loss step
+        assert info["current_drawdown"] > 0.0
+
+    def test_dd_penalty_zero_when_lambda_dd_zero(self):
+        """With lambda_dd=0, reward should match original formula (no dd penalty)."""
+        T_ = 10
+        obs_array = np.ones((T_, OBS_DIM), dtype=np.float32)
+        return_array = np.zeros((T_, N_TICKERS), dtype=np.float32)
+        return_array[0] = 0.05
+        return_array[1] = -0.10
+
+        env_no_dd = PortfolioEnv(obs_array, return_array, _make_config())
+        env_with_dd = PortfolioEnv(obs_array.copy(), return_array.copy(),
+                                    _make_config_with_dd(lambda_dd=0.0))
+        env_no_dd.reset()
+        env_with_dd.reset()
+        action = np.full(ACTION_DIM, 0.5, dtype=np.float32)
+        for _ in range(3):
+            _, r1, _, _, _ = env_no_dd.step(action)
+            _, r2, _, _, _ = env_with_dd.step(action)
+            np.testing.assert_allclose(r1, r2, atol=1e-8)
+
+    def test_dd_penalty_lowers_reward_during_drawdown(self):
+        """With lambda_dd > 0, reward should be lower during drawdown than without."""
+        T_ = 5
+        obs_array = np.ones((T_, OBS_DIM), dtype=np.float32)
+        return_array = np.zeros((T_, N_TICKERS), dtype=np.float32)
+        return_array[0] = 0.05
+        return_array[1] = -0.10
+
+        env_no_dd = PortfolioEnv(obs_array, return_array.copy(), _make_config())
+        env_with_dd = PortfolioEnv(obs_array.copy(), return_array.copy(),
+                                    _make_config_with_dd(lambda_dd=1.0, dd_threshold=0.0))
+        env_no_dd.reset()
+        env_with_dd.reset()
+        action = np.full(ACTION_DIM, 0.5, dtype=np.float32)
+        env_no_dd.step(action)     # gain step
+        env_with_dd.step(action)   # gain step
+        _, r_no, _, _, _ = env_no_dd.step(action)     # loss step
+        _, r_dd, _, _, _ = env_with_dd.step(action)   # loss step
+        assert r_dd < r_no
+
+    def test_dd_threshold_prevents_small_dd_penalty(self):
+        """With dd_threshold=0.20, a 10% drawdown should incur no penalty."""
+        T_ = 5
+        obs_array = np.ones((T_, OBS_DIM), dtype=np.float32)
+        return_array = np.zeros((T_, N_TICKERS), dtype=np.float32)
+        return_array[0] = 0.05
+        return_array[1] = -0.10  # ~10% drawdown (below 20% threshold)
+
+        env_no_dd = PortfolioEnv(obs_array, return_array.copy(), _make_config())
+        env_threshold = PortfolioEnv(obs_array.copy(), return_array.copy(),
+                                      _make_config_with_dd(lambda_dd=1.0, dd_threshold=0.20))
+        env_no_dd.reset()
+        env_threshold.reset()
+        action = np.full(ACTION_DIM, 0.5, dtype=np.float32)
+        env_no_dd.step(action)
+        env_threshold.step(action)
+        _, r_no, _, _, _ = env_no_dd.step(action)
+        _, r_thresh, _, _, _ = env_threshold.step(action)
+        # With threshold above actual drawdown, reward should match no-penalty env
+        np.testing.assert_allclose(r_no, r_thresh, atol=1e-8)
+
+    def test_reset_clears_drawdown_state(self):
+        """After reset, drawdown tracking should start fresh."""
+        env = _make_env_with_dd(T=10, lambda_dd=1.0, dd_threshold=0.0)
+        env.reset()
+        action = np.full(ACTION_DIM, 0.5, dtype=np.float32)
+        for _ in range(5):
+            env.step(action)
+        env.reset()
+        assert env._portfolio_value == 1.0
+        assert env._peak_value == 1.0
+
+    def test_drawdown_formula_matches_manual(self):
+        """Verify drawdown = (peak - value) / peak with controlled returns."""
+        T_ = 5
+        obs_array = np.ones((T_, OBS_DIM), dtype=np.float32)
+        # Equal-weight portfolio of 5 tickers + cash (uniform softmax)
+        # with 0.5 logits → softmax → ~1/6 each
+        # Only ticker returns matter; cash returns 0
+        return_array = np.zeros((T_, N_TICKERS), dtype=np.float32)
+        return_array[0] = 0.06   # all tickers +6%
+        return_array[1] = -0.12  # all tickers -12%
+
+        env = PortfolioEnv(obs_array, return_array,
+                           _make_config_with_dd(lambda_dd=0.0))
+        env.reset()
+        action = np.full(ACTION_DIM, 0.5, dtype=np.float32)
+
+        # Step 0: gain
+        _, _, _, _, info0 = env.step(action)
+        # Compute expected portfolio return for uniform-ish weights
+        w = PortfolioEnv._softmax(action)
+        port_ret_0 = float(np.dot(w[:N_TICKERS], return_array[0]))
+        expected_nav = 1.0 * (1.0 + port_ret_0)
+        assert info0["current_drawdown"] == 0.0  # new high
+
+        # Step 1: loss
+        _, _, _, _, info1 = env.step(action)
+        port_ret_1 = float(np.dot(w[:N_TICKERS], return_array[1]))
+        expected_nav *= (1.0 + port_ret_1)
+        expected_peak = 1.0 * (1.0 + port_ret_0)  # peak was after step 0
+        expected_dd = (expected_peak - expected_nav) / expected_peak
+        np.testing.assert_allclose(info1["current_drawdown"], expected_dd, atol=1e-6)

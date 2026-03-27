@@ -385,6 +385,65 @@ def run_sixty_forty_spy_agg(
 
 
 # ---------------------------------------------------------------------------
+# Ensemble PPO inference
+# ---------------------------------------------------------------------------
+
+def run_ppo_ensemble(
+    model_paths: list[str],
+    test_obs_norm: np.ndarray,
+    test_ret: np.ndarray,
+    config: dict,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Average raw action vectors from multiple trained PPO models, apply softmax
+    once, and compute portfolio returns using the averaged weights.
+
+    Parameters
+    ----------
+    model_paths : list of str
+        Paths to model .zip files (without .zip extension).
+    test_obs_norm : np.ndarray
+        Normalised test observations.
+    test_ret : np.ndarray
+        Forward return array for the test set.
+    config : dict
+        Loaded config.yaml.
+
+    Returns
+    -------
+    port_returns : np.ndarray, shape (T,)
+    weights : np.ndarray, shape (T, n_assets)
+    """
+    from src.portfolio_env import PortfolioEnv
+    from stable_baselines3 import PPO
+
+    models = [PPO.load(p) for p in model_paths]
+    n_models = len(models)
+
+    env = PortfolioEnv(test_obs_norm, test_ret, config)
+    obs, _ = env.reset()
+
+    all_returns = []
+    all_weights = []
+    terminated = False
+
+    while not terminated:
+        # Get raw actions from each model
+        actions = []
+        for m in models:
+            action, _ = m.predict(obs, deterministic=True)
+            actions.append(action)
+        # Average raw action vectors
+        avg_action = np.mean(actions, axis=0)
+        # Step env with averaged action (softmax applied inside env)
+        obs, _, terminated, _, info = env.step(avg_action)
+        all_returns.append(info["portfolio_return"])
+        all_weights.append(info["weights"])
+
+    return np.array(all_returns, dtype=np.float32), np.array(all_weights, dtype=np.float32)
+
+
+# ---------------------------------------------------------------------------
 # Main evaluation entrypoint
 # ---------------------------------------------------------------------------
 
@@ -472,10 +531,29 @@ def main(config_path: str = "config.yaml", output_path: str | None = None) -> No
     # Collect all strategy returns + weights for metrics and bootstrap
     strategies = [
         ("ppo", ppo_returns, ppo_weights),
+    ]
+
+    # 7b. Ensemble PPO (average actions across seed models) -----------------
+    ensemble_seeds = [42, 1, 7, 2026]
+    ensemble_paths = []
+    for s in ensemble_seeds:
+        p = str(Path(out_cfg["model_dir"]) / f"best_model_seed_{s}")
+        if Path(p + ".zip").exists():
+            ensemble_paths.append(p)
+    if len(ensemble_paths) >= 2:
+        print(f"Running PPO ensemble with {len(ensemble_paths)} seed models ...")
+        ens_ret, ens_wt = run_ppo_ensemble(
+            ensemble_paths, test_obs_norm, test_ret, config
+        )
+        strategies.append(("ppo_ensemble", ens_ret, ens_wt))
+    else:
+        print(f"Warning: only {len(ensemble_paths)} seed models found, skipping ensemble")
+
+    strategies.extend([
         ("equal_weight_buyhold", *run_equal_weight_buyhold(test_ret)),
         ("equal_weight_monthly", *run_equal_weight_monthly(test_ret, test_dates)),
         ("max_sharpe", *run_max_sharpe(train_ret, test_ret)),
-    ]
+    ])
 
     # 60/40 SPY/AGG baseline (requires yfinance / network access)
     try:

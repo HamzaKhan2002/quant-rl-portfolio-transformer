@@ -5,11 +5,14 @@ Observation space : Box(shape=(74,))   — 5×14 per-ticker + 4 shared regime
 Action space      : Box(low=-20, high=20, shape=(6,)) — raw logits for softmax
                     → projected to probability simplex (5 tickers + 1 cash)
 
-Reward (strictly from approved design — no additional shaping):
+Reward:
     r_portfolio(t)   = Σ_i  w_i(t) × simple_return_i(t+1)
     σ_rolling_21d(t) = rolling std of the last 21 portfolio returns
     turnover(t)      = Σ_i |w_i(t) − w_i(t−1)|
-    reward(t)        = r_portfolio(t) / (σ_rolling_21d(t) + ε) − λ × turnover(t)
+    drawdown(t)      = (peak_value − current_value) / peak_value
+    reward(t)        = r_portfolio(t) / (σ_rolling_21d(t) + ε)
+                     − λ_tc × turnover(t)
+                     − λ_dd × max(0, drawdown(t) − dd_threshold)
 
 Episode structure:
     - Starts at index 0 (first date in the provided obs/return arrays).
@@ -70,9 +73,11 @@ class PortfolioEnv(gym.Env):
         self.n_tickers: int = env_cfg["n_tickers"]
         self.action_dim: int = env_cfg["action_dim"]       # 6 (5 tickers + cash)
         self.obs_dim:    int = env_cfg["obs_dim"]           # 74
-        self.lambda_tc:  float = float(env_cfg["transaction_cost"])
-        self.vol_eps:    float = float(env_cfg["vol_eps"])
-        self.vol_window: int   = int(env_cfg["vol_window"])
+        self.lambda_tc:    float = float(env_cfg["transaction_cost"])
+        self.vol_eps:      float = float(env_cfg["vol_eps"])
+        self.vol_window:   int   = int(env_cfg["vol_window"])
+        self.lambda_dd:    float = float(env_cfg.get("lambda_dd", 0.0))
+        self.dd_threshold: float = float(env_cfg.get("dd_threshold", 0.05))
 
         # Last row of forward_return_array is 0-filled (shift(-1).fillna(0));
         # stop one step early so every step has a real forward return.
@@ -97,6 +102,8 @@ class PortfolioEnv(gym.Env):
         self._prev_weights = np.zeros(self.action_dim, dtype=np.float32)
         self._return_buffer = np.zeros(self.vol_window, dtype=np.float64)
         self._buffer_count: int = 0
+        self._portfolio_value: float = 1.0   # running NAV for drawdown tracking
+        self._peak_value:      float = 1.0   # running max of NAV
 
     # ------------------------------------------------------------------
     # Gymnasium API
@@ -116,6 +123,8 @@ class PortfolioEnv(gym.Env):
         self._prev_weights[: self.n_tickers] = 1.0 / self.n_tickers
         self._return_buffer = np.zeros(self.vol_window, dtype=np.float64)
         self._buffer_count = 0
+        self._portfolio_value = 1.0
+        self._peak_value = 1.0
 
         return self.obs_array[0].copy(), {}
 
@@ -157,14 +166,20 @@ class PortfolioEnv(gym.Env):
         # 5. Transaction cost (L1 weight turnover)
         turnover = float(np.sum(np.abs(weights - self._prev_weights)))
 
-        # 6. Reward — Sharpe-normalised return minus turnover cost
+        # 5b. Update portfolio NAV and compute current drawdown
+        self._portfolio_value *= (1.0 + port_return)
+        self._peak_value = max(self._peak_value, self._portfolio_value)
+        current_drawdown = (self._peak_value - self._portfolio_value) / self._peak_value
+
+        # 6. Reward — Sharpe-normalised return minus turnover cost minus drawdown penalty
         #    During warm-up (buffer not yet full), the vol estimate is
         #    unreliable, so use raw portfolio return instead of dividing
         #    by near-zero vol (which causes reward spikes of ~1e5).
+        dd_penalty = self.lambda_dd * max(0.0, current_drawdown - self.dd_threshold)
         if self._buffer_count < self.vol_window:
-            reward = port_return - self.lambda_tc * turnover
+            reward = port_return - self.lambda_tc * turnover - dd_penalty
         else:
-            reward = port_return / (roll_vol + self.vol_eps) - self.lambda_tc * turnover
+            reward = port_return / (roll_vol + self.vol_eps) - self.lambda_tc * turnover - dd_penalty
 
         # 7. Advance state
         self._prev_weights = weights.copy()
@@ -185,6 +200,7 @@ class PortfolioEnv(gym.Env):
             "turnover":         turnover,
             "weights":          weights.copy(),
             "step":             self._t - 1,
+            "current_drawdown": current_drawdown,
         }
 
         return next_obs, float(reward), terminated, truncated, info

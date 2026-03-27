@@ -26,6 +26,8 @@ env:
   transaction_cost: 0.001  # lambda: 10 bps per unit of weight turnover
   vol_eps: 1.0e-6
   vol_window: 21
+  lambda_dd: 0.5           # drawdown penalty coefficient
+  dd_threshold: 0.05       # only penalize drawdowns > 5%
 
 ppo:
   policy: "MlpPolicy"

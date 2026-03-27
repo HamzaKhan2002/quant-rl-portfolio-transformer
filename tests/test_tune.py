@@ -128,3 +128,5 @@ class TestSearchSpace:
         assert "gamma" in params
         assert "ent_coef" in params
         assert "tc_penalty_lambda" in params
+        assert "lambda_dd" in params
+        assert "dd_threshold" in params

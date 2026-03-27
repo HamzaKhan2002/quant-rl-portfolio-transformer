@@ -78,6 +78,8 @@ def objective(
     gamma = trial.suggest_float("gamma", 0.95, 0.999)
     ent_coef = trial.suggest_float("ent_coef", 1e-4, 0.05, log=True)
     tc_penalty_lambda = trial.suggest_float("tc_penalty_lambda", 1e-4, 5e-3, log=True)
+    lambda_dd = trial.suggest_float("lambda_dd", 0.1, 2.0, log=True)
+    dd_threshold = trial.suggest_float("dd_threshold", 0.02, 0.10)
 
     # --- Build trial config ---------------------------------------------------
     trial_config = copy.deepcopy(config)
@@ -86,6 +88,8 @@ def objective(
     trial_config["ppo"]["gamma"] = gamma
     trial_config["ppo"]["ent_coef"] = ent_coef
     trial_config["env"]["transaction_cost"] = tc_penalty_lambda
+    trial_config["env"]["lambda_dd"] = lambda_dd
+    trial_config["env"]["dd_threshold"] = dd_threshold
 
     n_envs = int(config.get("training", {}).get("n_envs", 1))
     # batch_size must divide n_steps * n_envs evenly; 63 divides 126,252,504
