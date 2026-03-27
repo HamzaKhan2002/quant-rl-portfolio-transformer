@@ -19,6 +19,7 @@ Pipeline:
 from __future__ import annotations
 
 import argparse
+import copy
 import os
 import sys
 from pathlib import Path
@@ -44,7 +45,10 @@ def main(config_path: str = "config.yaml", use_tuned: bool = False, seed: int | 
     from src.portfolio_env import PortfolioEnv
     from src.ppo_agent import make_callbacks, make_ppo
     from stable_baselines3.common.monitor import Monitor
-    from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+    from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
+
+    import torch
+    torch.set_num_threads(1)  # prevent thread contention across SubprocVecEnv workers
 
     # 1. Load config ---------------------------------------------------------
     config = load_config(config_path)
@@ -116,10 +120,27 @@ def main(config_path: str = "config.yaml", use_tuned: bool = False, seed: int | 
     train_cfg = config.get("training", {})
     norm_reward = train_cfg.get("norm_reward", True)
     clip_reward = float(train_cfg.get("clip_reward", 10.0))
+    n_envs = int(train_cfg.get("n_envs", 1))
 
-    train_env = DummyVecEnv([
-        lambda: Monitor(PortfolioEnv(train_obs_norm, train_ret, config))
-    ])
+    def _make_train_env(obs_arr, ret_arr, cfg):
+        """Factory that returns a closure for SubprocVecEnv.
+        Each worker gets its own copy of arrays to avoid shared-memory issues.
+        """
+        _obs = obs_arr.copy()
+        _ret = ret_arr.copy()
+        _cfg = copy.deepcopy(cfg)
+        def _init():
+            return Monitor(PortfolioEnv(_obs, _ret, _cfg))
+        return _init
+
+    env_fns = [_make_train_env(train_obs_norm, train_ret, config)
+               for _ in range(n_envs)]
+
+    if n_envs > 1:
+        train_env = SubprocVecEnv(env_fns)
+    else:
+        train_env = DummyVecEnv(env_fns)
+
     train_env = VecNormalize(
         train_env,
         norm_obs=False,       # obs already z-scored by our Normalizer

@@ -63,8 +63,10 @@ def objective(
     import torch
     torch.set_num_threads(1)
 
+    import copy as _copy
+
     from stable_baselines3.common.monitor import Monitor
-    from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+    from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
     from src.evaluate import _annualised_sharpe
     from src.portfolio_env import PortfolioEnv
@@ -81,20 +83,35 @@ def objective(
     trial_config = copy.deepcopy(config)
     trial_config["ppo"]["learning_rate"] = lr
     trial_config["ppo"]["n_steps"] = n_steps
-    # Pick batch_size that evenly divides n_steps (63 divides 126, 252, 504)
-    trial_config["ppo"]["batch_size"] = 63
     trial_config["ppo"]["gamma"] = gamma
     trial_config["ppo"]["ent_coef"] = ent_coef
     trial_config["env"]["transaction_cost"] = tc_penalty_lambda
+
+    n_envs = int(config.get("training", {}).get("n_envs", 1))
+    # batch_size must divide n_steps * n_envs evenly; 63 divides 126,252,504
+    trial_config["ppo"]["batch_size"] = 63 * n_envs
 
     tuning_timesteps = int(
         config.get("tuning", {}).get("tuning_timesteps", 100_000)
     )
 
     # --- Build envs -----------------------------------------------------------
-    train_env = DummyVecEnv([
-        lambda: Monitor(PortfolioEnv(train_obs, train_ret, trial_config))
-    ])
+    def _make_env(obs, ret, cfg):
+        _obs = obs.copy()
+        _ret = ret.copy()
+        _cfg = _copy.deepcopy(cfg)
+        def _init():
+            return Monitor(PortfolioEnv(_obs, _ret, _cfg))
+        return _init
+
+    env_fns = [_make_env(train_obs, train_ret, trial_config)
+               for _ in range(n_envs)]
+
+    if n_envs > 1:
+        train_env = SubprocVecEnv(env_fns)
+    else:
+        train_env = DummyVecEnv(env_fns)
+
     train_env = VecNormalize(
         train_env, norm_obs=False, norm_reward=True, clip_reward=10.0,
     )

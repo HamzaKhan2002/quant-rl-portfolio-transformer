@@ -388,7 +388,7 @@ def run_sixty_forty_spy_agg(
 # Main evaluation entrypoint
 # ---------------------------------------------------------------------------
 
-def main(config_path: str = "config.yaml") -> None:
+def main(config_path: str = "config.yaml", output_path: str | None = None) -> None:
     from src.data_loader import load_config, load_merged_features, split_data
     from src.feature_engineer import (
         Normalizer,
@@ -501,7 +501,7 @@ def main(config_path: str = "config.yaml") -> None:
         results.append(m)
 
     # 8. Save metrics --------------------------------------------------------
-    metrics_path = out_cfg["metrics_file"]
+    metrics_path = output_path if output_path else out_cfg["metrics_file"]
     with open(metrics_path, "w") as fh:
         json.dump(results, fh, indent=2)
     print(f"Metrics saved -> {metrics_path}")
@@ -541,5 +541,9 @@ if __name__ == "__main__":
         "--config", default="config.yaml",
         help="Path to config.yaml (default: config.yaml in cwd)"
     )
+    parser.add_argument(
+        "--output", type=str, default=None,
+        help="Override output path for eval_metrics.json"
+    )
     args = parser.parse_args()
-    main(config_path=args.config)
+    main(config_path=args.config, output_path=args.output)
