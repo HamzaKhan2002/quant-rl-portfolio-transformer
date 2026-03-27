@@ -223,7 +223,7 @@ class TestStep:
         env.reset()
         _, _, _, _, info = env.step(env.action_space.sample())
         for key in ["portfolio_return", "rolling_vol", "turnover", "weights", "step",
-                     "current_drawdown"]:
+                     "current_drawdown", "weight_entropy", "div_bonus", "cvar_penalty"]:
             assert key in info, f"Missing info key: {key}"
 
     def test_step_advances_time(self):
@@ -439,3 +439,190 @@ class TestDrawdownPenalty:
         expected_peak = 1.0 * (1.0 + port_ret_0)  # peak was after step 0
         expected_dd = (expected_peak - expected_nav) / expected_peak
         np.testing.assert_allclose(info1["current_drawdown"], expected_dd, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Constrained softmax (Phase 4, Task 1)
+# ---------------------------------------------------------------------------
+
+class TestConstrainedSoftmax:
+
+    def test_unconstrained_matches_standard_softmax(self):
+        """max_weight=1.0 should give identical output to standard softmax."""
+        x = np.array([1.0, 2.0, -1.0, 0.5, 3.0, -2.0], dtype=np.float32)
+        w_constrained = PortfolioEnv._constrained_softmax(x, max_weight=1.0)
+        w_standard    = PortfolioEnv._softmax(x)
+        np.testing.assert_allclose(w_constrained, w_standard, atol=1e-5)
+
+    def test_output_sums_to_one(self):
+        x = np.array([5.0, 1.0, 0.5, -1.0, 2.0, 4.0], dtype=np.float32)
+        for cap in [0.25, 0.30, 0.35, 0.50]:
+            w = PortfolioEnv._constrained_softmax(x, max_weight=cap)
+            np.testing.assert_allclose(w.sum(), 1.0, atol=1e-6,
+                                       err_msg=f"sum ≠ 1 for cap={cap}")
+
+    def test_no_weight_exceeds_cap(self):
+        """After constrained projection, all weights must be ≤ max_weight."""
+        x = np.array([10.0, -10.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        for cap in [0.20, 0.30, 0.35, 0.50]:
+            w = PortfolioEnv._constrained_softmax(x, max_weight=cap)
+            assert w.max() <= cap + 1e-6, (
+                f"max weight {w.max():.6f} exceeds cap {cap} for x={x}"
+            )
+
+    def test_weights_non_negative(self):
+        x = np.random.default_rng(42).normal(0, 5, 6).astype(np.float32)
+        w = PortfolioEnv._constrained_softmax(x, max_weight=0.35)
+        assert (w >= -1e-9).all()
+
+    def test_output_dtype_float32(self):
+        x = np.ones(6, dtype=np.float64)
+        w = PortfolioEnv._constrained_softmax(x, max_weight=0.35)
+        assert w.dtype == np.float32
+
+    def test_tight_cap_produces_near_uniform(self):
+        """With cap = 1/n, output should approach 1/n (uniform)."""
+        n = 6
+        cap = 1.0 / n
+        x = np.array([10.0, -10.0, 0.0, 5.0, -5.0, 3.0], dtype=np.float32)
+        w = PortfolioEnv._constrained_softmax(x, max_weight=cap)
+        np.testing.assert_allclose(w, cap, atol=1e-5)
+
+    def test_env_uses_constrained_projection(self):
+        """After Task 1, no asset weight should exceed max_weight_per_ticker."""
+        cap = 0.30
+        cfg = _make_config()
+        cfg["env"]["max_weight_per_ticker"] = cap
+        rng = np.random.default_rng(7)
+        obs_array    = rng.standard_normal((T, OBS_DIM)).astype(np.float32)
+        return_array = rng.normal(0.001, 0.01, (T, N_TICKERS)).astype(np.float32)
+        env = PortfolioEnv(obs_array, return_array, cfg)
+        env.reset()
+        # Use extreme logits to stress-test the constraint
+        extreme_action = np.array([20.0, -20.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        _, _, _, _, info = env.step(extreme_action)
+        assert info["weights"].max() <= cap + 1e-6
+
+    def test_large_logit_overflow_safe(self):
+        """Extreme logit values should not produce NaN or Inf."""
+        x = np.array([1000.0, -1000.0, 500.0, -500.0, 0.0, 100.0], dtype=np.float32)
+        w = PortfolioEnv._constrained_softmax(x, max_weight=0.35)
+        assert not np.isnan(w).any()
+        assert not np.isinf(w).any()
+
+
+# ---------------------------------------------------------------------------
+# Diversification entropy bonus (Phase 4, Task 1)
+# ---------------------------------------------------------------------------
+
+def _make_config_with_div(lambda_div: float = 0.1,
+                           max_weight: float = 1.0) -> dict:
+    cfg = _make_config()
+    cfg["env"]["lambda_div"] = lambda_div
+    cfg["env"]["max_weight_per_ticker"] = max_weight
+    return cfg
+
+
+class TestDiversificationBonus:
+
+    def test_div_bonus_zero_when_lambda_div_zero(self):
+        """lambda_div=0 → div_bonus = 0 at every step."""
+        cfg = _make_config_with_div(lambda_div=0.0)
+        rng = np.random.default_rng(1)
+        obs_array    = rng.standard_normal((T, OBS_DIM)).astype(np.float32)
+        return_array = rng.normal(0.001, 0.01, (T, N_TICKERS)).astype(np.float32)
+        env = PortfolioEnv(obs_array, return_array, cfg)
+        env.reset()
+        for _ in range(5):
+            _, _, _, _, info = env.step(env.action_space.sample())
+            np.testing.assert_allclose(info["div_bonus"], 0.0, atol=1e-8)
+
+    def test_div_bonus_higher_for_uniform_than_concentrated(self):
+        """Uniform weights should earn a higher diversification bonus."""
+        cfg = _make_config_with_div(lambda_div=0.1)
+        rng = np.random.default_rng(2)
+        obs_array    = rng.standard_normal((T, OBS_DIM)).astype(np.float32)
+        return_array = rng.normal(0.001, 0.01, (T, N_TICKERS)).astype(np.float32)
+        env = PortfolioEnv(obs_array, return_array, cfg)
+        env.reset()
+
+        # Uniform action → uniform-ish weights
+        _, _, _, _, info_uniform = env.step(np.zeros(ACTION_DIM, dtype=np.float32))
+
+        env.reset()
+        # Concentrated action → nearly all weight on first asset
+        concentrated = np.array([20.0, -20.0, -20.0, -20.0, -20.0, -20.0], dtype=np.float32)
+        _, _, _, _, info_conc = env.step(concentrated)
+
+        assert info_uniform["div_bonus"] > info_conc["div_bonus"]
+
+    def test_div_bonus_adds_to_reward(self):
+        """With lambda_div > 0, reward should be strictly higher than with lambda_div=0
+        for the same action (for uniform-ish weights where entropy > 0)."""
+        cfg_no  = _make_config_with_div(lambda_div=0.0)
+        cfg_yes = _make_config_with_div(lambda_div=0.1)
+
+        rng = np.random.default_rng(3)
+        obs_array    = rng.standard_normal((T, OBS_DIM)).astype(np.float32)
+        return_array = rng.normal(0.001, 0.01, (T, N_TICKERS)).astype(np.float32)
+
+        env_no  = PortfolioEnv(obs_array.copy(), return_array.copy(), cfg_no)
+        env_yes = PortfolioEnv(obs_array.copy(), return_array.copy(), cfg_yes)
+        env_no.reset()
+        env_yes.reset()
+
+        action = np.zeros(ACTION_DIM, dtype=np.float32)  # uniform-ish
+        _, r_no,  *_ = env_no.step(action)
+        _, r_yes, *_ = env_yes.step(action)
+        assert r_yes > r_no
+
+    def test_weight_entropy_in_info(self):
+        """weight_entropy should be in info dict and be non-negative."""
+        cfg = _make_config_with_div(lambda_div=0.1)
+        rng = np.random.default_rng(4)
+        obs_array    = rng.standard_normal((T, OBS_DIM)).astype(np.float32)
+        return_array = rng.normal(0.001, 0.01, (T, N_TICKERS)).astype(np.float32)
+        env = PortfolioEnv(obs_array, return_array, cfg)
+        env.reset()
+        _, _, _, _, info = env.step(env.action_space.sample())
+        assert "weight_entropy" in info
+        assert info["weight_entropy"] >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# CVaR Lagrangian interface (Phase 4, Task 3 integration tests)
+# ---------------------------------------------------------------------------
+
+class TestCVaRInterface:
+
+    def test_set_cvar_params_updates_env(self):
+        """set_cvar_params should update lambda_cvar and var_alpha on the env."""
+        env = _make_env()
+        env.set_cvar_params(lambda_cvar=0.5, var_alpha=-0.02)
+        assert env.lambda_cvar == 0.5
+        assert env.var_alpha == -0.02
+
+    def test_cvar_penalty_zero_when_lambda_zero(self):
+        """With lambda_cvar=0, cvar_penalty should always be 0."""
+        env = _make_env()
+        env.reset()
+        env.set_cvar_params(lambda_cvar=0.0, var_alpha=-0.01)
+        for _ in range(5):
+            _, _, _, _, info = env.step(env.action_space.sample())
+            assert info["cvar_penalty"] == 0.0
+
+    def test_cvar_penalty_nonzero_for_large_losses(self):
+        """With large lambda and VaR near 0, tail losses incur a penalty."""
+        T_ = 5
+        obs_array = np.ones((T_, OBS_DIM), dtype=np.float32)
+        return_array = np.full((T_, N_TICKERS), -0.05, dtype=np.float32)  # all losses
+
+        cfg = _make_config()
+        cfg["env"]["lambda_cvar_init"] = 2.0
+        cfg["env"]["var_alpha_init"] = 0.0  # VaR = 0 → penalty fires on any loss
+        env = PortfolioEnv(obs_array, return_array, cfg)
+        env.reset()
+        action = np.full(ACTION_DIM, 0.5, dtype=np.float32)
+        for _ in range(T_ - 1):
+            _, _, _, _, info = env.step(action)
+            assert info["cvar_penalty"] > 0.0

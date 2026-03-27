@@ -80,6 +80,9 @@ def objective(
     tc_penalty_lambda = trial.suggest_float("tc_penalty_lambda", 1e-4, 5e-3, log=True)
     lambda_dd = trial.suggest_float("lambda_dd", 0.1, 2.0, log=True)
     dd_threshold = trial.suggest_float("dd_threshold", 0.02, 0.10)
+    # Phase 4: diversification bonus and concentration constraint
+    lambda_div = trial.suggest_float("lambda_div", 0.01, 0.5, log=True)
+    max_weight = trial.suggest_float("max_weight_per_ticker", 0.25, 0.60)
 
     # --- Build trial config ---------------------------------------------------
     trial_config = copy.deepcopy(config)
@@ -90,6 +93,8 @@ def objective(
     trial_config["env"]["transaction_cost"] = tc_penalty_lambda
     trial_config["env"]["lambda_dd"] = lambda_dd
     trial_config["env"]["dd_threshold"] = dd_threshold
+    trial_config["env"]["lambda_div"] = lambda_div
+    trial_config["env"]["max_weight_per_ticker"] = max_weight
 
     n_envs = int(config.get("training", {}).get("n_envs", 1))
     # batch_size must divide n_steps * n_envs evenly; 63 divides 126,252,504

@@ -130,3 +130,5 @@ class TestSearchSpace:
         assert "tc_penalty_lambda" in params
         assert "lambda_dd" in params
         assert "dd_threshold" in params
+        assert "lambda_div" in params
+        assert "max_weight_per_ticker" in params

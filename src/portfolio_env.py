@@ -1,29 +1,39 @@
 """
-portfolio_env.py — Custom Gymnasium environment for PPO portfolio allocation.
+portfolio_env.py — Custom Gymnasium environment for PPO/DAPO portfolio allocation.
 
-Observation space : Box(shape=(74,))   — 5×14 per-ticker + 4 shared regime
-Action space      : Box(low=-20, high=20, shape=(6,)) — raw logits for softmax
-                    → projected to probability simplex (5 tickers + 1 cash)
+Observation space : Box(shape=(obs_dim,))  — per-ticker features + shared regime
+Action space      : Box(low=-20, high=20, shape=(action_dim,)) — raw logits
+                    → projected to probability simplex via constrained softmax
+                    → each weight ≤ max_weight_per_ticker (default 0.35)
 
-Reward:
+Reward (per step t):
     r_portfolio(t)   = Σ_i  w_i(t) × simple_return_i(t+1)
     σ_rolling_21d(t) = rolling std of the last 21 portfolio returns
     turnover(t)      = Σ_i |w_i(t) − w_i(t−1)|
     drawdown(t)      = (peak_value − current_value) / peak_value
-    reward(t)        = r_portfolio(t) / (σ_rolling_21d(t) + ε)
-                     − λ_tc × turnover(t)
-                     − λ_dd × max(0, drawdown(t) − dd_threshold)
+    entropy_w(t)     = −Σ_i w_i log(w_i + ε)   [Shannon weight entropy]
+    cvar_pen(t)      = λ_cvar × max(0, −r(t) − VaR_α)  [tail loss penalty]
+
+    reward(t) = r_portfolio(t) / (σ_rolling_21d(t) + ε)     [Sharpe term]
+              − λ_tc  × turnover(t)                          [cost term]
+              − λ_dd  × max(0, drawdown(t) − dd_threshold)   [drawdown term]
+              + λ_div × entropy_w(t) / ln(action_dim)        [diversification bonus]
+              − cvar_pen(t)                                  [CVaR Lagrangian]
+
+    During vol buffer warm-up (buffer_count < vol_window), the Sharpe term
+    degenerates to r_portfolio(t) to avoid reward spikes from near-zero vol.
 
 Episode structure:
-    - Starts at index 0 (first date in the provided obs/return arrays).
-    - Initial weights: equal allocation (1/n_tickers for each ticker, 0 cash).
-    - Terminates when all time steps have been consumed.
+    - Starts at index 0 in the provided obs/return arrays.
+    - Initial weights: equal allocation (1/n_tickers each, 0 cash).
+    - Terminates when all time steps are consumed.
     - No early termination on drawdown.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
+import math
 
 import numpy as np
 
@@ -38,7 +48,7 @@ except ImportError as exc:
 
 class PortfolioEnv(gym.Env):
     """
-    Single-asset-universe Gymnasium environment for PPO portfolio allocation.
+    Single-universe Gymnasium environment for PPO/DAPO portfolio allocation.
 
     Parameters
     ----------
@@ -70,14 +80,31 @@ class PortfolioEnv(gym.Env):
         self.forward_return_array = forward_return_array.astype(np.float32)
 
         env_cfg = config["env"]
-        self.n_tickers: int = env_cfg["n_tickers"]
+        self.n_tickers: int  = env_cfg["n_tickers"]
         self.action_dim: int = env_cfg["action_dim"]       # 6 (5 tickers + cash)
-        self.obs_dim:    int = env_cfg["obs_dim"]           # 74
-        self.lambda_tc:    float = float(env_cfg["transaction_cost"])
-        self.vol_eps:      float = float(env_cfg["vol_eps"])
-        self.vol_window:   int   = int(env_cfg["vol_window"])
+        self.obs_dim:    int = env_cfg["obs_dim"]           # 74 (or varies for ablations)
+        self.lambda_tc:  float = float(env_cfg["transaction_cost"])
+        self.vol_eps:    float = float(env_cfg["vol_eps"])
+        self.vol_window: int   = int(env_cfg["vol_window"])
+
+        # Drawdown penalty
         self.lambda_dd:    float = float(env_cfg.get("lambda_dd", 0.0))
         self.dd_threshold: float = float(env_cfg.get("dd_threshold", 0.05))
+
+        # Concentration constraint: each weight ≤ max_weight_per_ticker
+        # Default 1.0 = unconstrained (backward compatible)
+        self.max_weight: float = float(env_cfg.get("max_weight_per_ticker", 1.0))
+
+        # Diversification entropy bonus (Ng et al. compliant: additive shaping)
+        self.lambda_div: float = float(env_cfg.get("lambda_div", 0.0))
+        # log(action_dim) is the maximum entropy (uniform distribution)
+        self._log_n: float = math.log(self.action_dim)
+
+        # CVaR Lagrangian penalty (updated externally by CVaRLagrangianCallback)
+        # lambda_cvar: Lagrangian multiplier (dual variable, non-negative)
+        # var_alpha:   rolling VaR estimate at alpha level (negative = loss)
+        self.lambda_cvar: float = float(env_cfg.get("lambda_cvar_init", 0.0))
+        self.var_alpha:   float = float(env_cfg.get("var_alpha_init", -100.0))
 
         # Last row of forward_return_array is 0-filled (shift(-1).fillna(0));
         # stop one step early so every step has a real forward return.
@@ -103,7 +130,7 @@ class PortfolioEnv(gym.Env):
         self._return_buffer = np.zeros(self.vol_window, dtype=np.float64)
         self._buffer_count: int = 0
         self._portfolio_value: float = 1.0   # running NAV for drawdown tracking
-        self._peak_value:      float = 1.0   # running max of NAV
+        self._peak_value:      float = 1.0   # running peak NAV
 
     # ------------------------------------------------------------------
     # Gymnasium API
@@ -136,28 +163,24 @@ class PortfolioEnv(gym.Env):
 
         Parameters
         ----------
-        action : np.ndarray, shape (6,)
-            Raw agent output (R^6 logits).  Projected to the probability
-            simplex via softmax before use.
-
-        Returns
-        -------
-        obs, reward, terminated, truncated, info
+        action : np.ndarray, shape (action_dim,)
+            Raw agent output (logits in ℝ^n).  Projected to the probability
+            simplex via constrained softmax before use.
         """
-        # 1. Project action → valid portfolio weights
-        weights = self._softmax(action)  # shape (6,), sums to 1.0
+        # 1. Project action → valid portfolio weights (constrained simplex)
+        weights = self._constrained_softmax(action, self.max_weight)
 
-        # 2. Portfolio simple return (ticker weights × ticker forward returns)
-        ticker_weights  = weights[: self.n_tickers]          # first 5 dimensions
-        ticker_returns  = self.forward_return_array[self._t]  # shape (5,)
-        port_return     = float(np.dot(ticker_weights, ticker_returns))
+        # 2. Portfolio simple return
+        ticker_weights = weights[: self.n_tickers]
+        ticker_returns = self.forward_return_array[self._t]
+        port_return    = float(np.dot(ticker_weights, ticker_returns))
 
-        # 3. Update rolling portfolio return buffer (FIFO)
+        # 3. Update rolling return buffer (FIFO)
         self._return_buffer = np.roll(self._return_buffer, -1)
         self._return_buffer[-1] = port_return
         self._buffer_count = min(self._buffer_count + 1, self.vol_window)
 
-        # 4. Rolling portfolio volatility (only over filled portion of buffer)
+        # 4. Rolling portfolio volatility (over filled portion)
         if self._buffer_count < 2:
             roll_vol = 0.0
         else:
@@ -166,22 +189,42 @@ class PortfolioEnv(gym.Env):
         # 5. Transaction cost (L1 weight turnover)
         turnover = float(np.sum(np.abs(weights - self._prev_weights)))
 
-        # 5b. Update portfolio NAV and compute current drawdown
+        # 6. Update NAV + drawdown
         self._portfolio_value *= (1.0 + port_return)
         self._peak_value = max(self._peak_value, self._portfolio_value)
-        current_drawdown = (self._peak_value - self._portfolio_value) / self._peak_value
+        current_drawdown = (
+            (self._peak_value - self._portfolio_value) / self._peak_value
+        )
 
-        # 6. Reward — Sharpe-normalised return minus turnover cost minus drawdown penalty
-        #    During warm-up (buffer not yet full), the vol estimate is
-        #    unreliable, so use raw portfolio return instead of dividing
-        #    by near-zero vol (which causes reward spikes of ~1e5).
+        # 7. Diversification entropy bonus (Ng et al.: additive, no optimal policy change)
+        #    Normalised entropy ∈ [0, 1]: 0 = full concentration, 1 = uniform
+        weight_entropy = float(
+            -np.sum(weights * np.log(weights + 1e-8))
+        )
+        div_bonus = self.lambda_div * (weight_entropy / self._log_n)
+
+        # 8. CVaR Lagrangian step-level penalty
+        #    Penalises returns that land in the tail (below −VaR_α).
+        #    var_alpha is updated externally by CVaRLagrangianCallback.
+        #    When lambda_cvar = 0 (default), this term is zero.
+        cvar_penalty = self.lambda_cvar * max(0.0, -port_return - (-self.var_alpha))
+
+        # 9. Reward — warm-up aware Sharpe + all penalty/bonus terms
         dd_penalty = self.lambda_dd * max(0.0, current_drawdown - self.dd_threshold)
         if self._buffer_count < self.vol_window:
-            reward = port_return - self.lambda_tc * turnover - dd_penalty
+            sharpe_term = port_return
         else:
-            reward = port_return / (roll_vol + self.vol_eps) - self.lambda_tc * turnover - dd_penalty
+            sharpe_term = port_return / (roll_vol + self.vol_eps)
 
-        # 7. Advance state
+        reward = (
+            sharpe_term
+            - self.lambda_tc * turnover
+            - dd_penalty
+            + div_bonus
+            - cvar_penalty
+        )
+
+        # 10. Advance state
         self._prev_weights = weights.copy()
         self._t += 1
 
@@ -195,12 +238,15 @@ class PortfolioEnv(gym.Env):
         )
 
         info: Dict[str, Any] = {
-            "portfolio_return": port_return,
-            "rolling_vol":      roll_vol,
-            "turnover":         turnover,
-            "weights":          weights.copy(),
-            "step":             self._t - 1,
-            "current_drawdown": current_drawdown,
+            "portfolio_return":  port_return,
+            "rolling_vol":       roll_vol,
+            "turnover":          turnover,
+            "weights":           weights.copy(),
+            "step":              self._t - 1,
+            "current_drawdown":  current_drawdown,
+            "weight_entropy":    weight_entropy,
+            "div_bonus":         div_bonus,
+            "cvar_penalty":      cvar_penalty,
         }
 
         return next_obs, float(reward), terminated, truncated, info
@@ -209,12 +255,90 @@ class PortfolioEnv(gym.Env):
         pass
 
     # ------------------------------------------------------------------
-    # Helpers
+    # CVaR Lagrangian interface (called by CVaRLagrangianCallback)
+    # ------------------------------------------------------------------
+
+    def set_cvar_params(self, lambda_cvar: float, var_alpha: float) -> None:
+        """
+        Update CVaR Lagrangian parameters from an external callback.
+
+        Parameters
+        ----------
+        lambda_cvar : float
+            Current Lagrangian multiplier (≥ 0).  Larger values impose
+            stronger constraints on tail losses.
+        var_alpha : float
+            Alpha-level VaR estimate from the rolling return buffer.
+            Negative value represents a loss (e.g. −0.01 = 1% daily loss).
+        """
+        self.lambda_cvar = float(lambda_cvar)
+        self.var_alpha   = float(var_alpha)
+
+    # ------------------------------------------------------------------
+    # Action projection
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _constrained_softmax(x: np.ndarray, max_weight: float = 1.0) -> np.ndarray:
+        """
+        Project logit vector onto the constrained probability simplex.
+
+        When max_weight ≥ 1.0 this reduces to standard softmax.  For
+        max_weight < 1.0 the output is the unique projection satisfying:
+          - all weights ≥ 0
+          - weights sum to 1.0
+          - no single weight exceeds max_weight
+
+        Algorithm: iterative clip-and-redistribute (converges in O(n) iterations).
+
+        Parameters
+        ----------
+        x : np.ndarray, shape (n,)
+            Raw logits.
+        max_weight : float
+            Maximum allowed weight per asset (0 < max_weight ≤ 1).
+
+        Returns
+        -------
+        np.ndarray, shape (n,)   dtype float32, values in [0, max_weight], sum = 1.
+        """
+        x = np.clip(x, -20.0, 20.0)
+        e = np.exp(x - x.max())
+        weights = (e / e.sum()).astype(np.float64)
+
+        if max_weight >= 1.0:
+            return weights.astype(np.float32)
+
+        # Iterative projection: clip above max_weight, redistribute excess
+        # proportionally to strictly-uncapped assets.  Previously capped
+        # elements (== max_weight) are excluded from redistribution to prevent
+        # them from receiving additional weight and violating the constraint.
+        # Converges in at most n iterations (each iteration caps ≥1 asset).
+        for _ in range(len(weights) + 1):
+            over = weights > max_weight
+            if not over.any():
+                break
+            excess = (weights[over] - max_weight).sum()
+            weights[over] = max_weight
+            # Only redistribute to elements strictly below cap
+            uncapped_mask = weights < max_weight
+            uncapped_sum = weights[uncapped_mask].sum()
+            if uncapped_sum > 1e-12:
+                weights[uncapped_mask] += (
+                    excess * weights[uncapped_mask] / uncapped_sum
+                )
+
+        # Numerical safety: renormalise to exactly 1.0
+        total = weights.sum()
+        if total > 1e-12:
+            weights /= total
+
+        return weights.astype(np.float32)
+
+    # Keep legacy name for backward compatibility with ensemble code
+    @staticmethod
     def _softmax(x: np.ndarray) -> np.ndarray:
-        """Numerically stable softmax — projects any R^n vector to the simplex."""
-        x = np.clip(x, -20.0, 20.0)     # guard against extreme values
+        """Numerically stable softmax (unconstrained)."""
+        x = np.clip(x, -20.0, 20.0)
         e = np.exp(x - x.max())
         return (e / e.sum()).astype(np.float32)
