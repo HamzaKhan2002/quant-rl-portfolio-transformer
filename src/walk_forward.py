@@ -3,11 +3,11 @@ walk_forward.py — Walk-forward cross-validation for the PPO portfolio agent.
 
 Six evaluation folds are defined in config.yaml under ``evaluation.folds``:
 
-  Fold 1 — Full model (74-dim): train 2014-2018, val 2019, test 2020 (COVID crash)
-  Fold 2 — Full model (74-dim): train 2014-2020, val 2021, test 2022 (bear market)
-  Fold 3 — Full model (74-dim): train 2014-2021, val 2022, test 2023 (recovery)
-  Fold 4 — Full model (74-dim): train 2014-2022, val 2023, test 2024 (AI bull run)
-  Fold 5 — Full model (74-dim): train 2014-2023, val 2024, test 2025 [default]
+  Fold 1 — Full model (79-dim): train 2014-2018, val 2019, test 2020 (COVID crash)
+  Fold 2 — Full model (79-dim): train 2014-2020, val 2021, test 2022 (bear market)
+  Fold 3 — Full model (79-dim): train 2014-2021, val 2022, test 2023 (recovery)
+  Fold 4 — Full model (79-dim): train 2014-2022, val 2023, test 2024 (AI bull run)
+  Fold 5 — Full model (79-dim): train 2014-2023, val 2024, test 2025 [default]
   Fold R — Regime-only (34-dim): train 2019-2021, val 2022-H1, test 2022-H2
 
 Sentiment data now extends back to 2014 (EDGAR 10-K filings); X/Grok social
@@ -543,9 +543,9 @@ def run_fold(
 
     print(f"\n{'='*72}")
     print(f"  FOLD {fold_id}: {fold_cfg.get('description', '')}")
-    print(f"  Train: {fold_cfg['train_start']} → {fold_cfg['train_end']}")
-    print(f"  Val:   {fold_cfg['val_start']}   → {fold_cfg['val_end']}")
-    print(f"  Test:  {fold_cfg['test_start']}  → {fold_cfg['test_end']}")
+    print(f"  Train: {fold_cfg['train_start']} -> {fold_cfg['train_end']}")
+    print(f"  Val:   {fold_cfg['val_start']}   -> {fold_cfg['val_end']}")
+    print(f"  Test:  {fold_cfg['test_start']}  -> {fold_cfg['test_end']}")
     print(f"  Seeds: {seeds}  |  use_tuned={use_tuned}")
     print(f"{'='*72}")
 
