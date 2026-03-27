@@ -157,8 +157,14 @@ class PortfolioEnv(gym.Env):
         # 5. Transaction cost (L1 weight turnover)
         turnover = float(np.sum(np.abs(weights - self._prev_weights)))
 
-        # 6. Reward — strictly Sharpe-normalised return minus turnover cost
-        reward = port_return / (roll_vol + self.vol_eps) - self.lambda_tc * turnover
+        # 6. Reward — Sharpe-normalised return minus turnover cost
+        #    During warm-up (buffer not yet full), the vol estimate is
+        #    unreliable, so use raw portfolio return instead of dividing
+        #    by near-zero vol (which causes reward spikes of ~1e5).
+        if self._buffer_count < self.vol_window:
+            reward = port_return - self.lambda_tc * turnover
+        else:
+            reward = port_return / (roll_vol + self.vol_eps) - self.lambda_tc * turnover
 
         # 7. Advance state
         self._prev_weights = weights.copy()

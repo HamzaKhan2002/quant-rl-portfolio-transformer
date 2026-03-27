@@ -24,7 +24,7 @@ env:
   obs_dim: 74            # 5 * 14 + 4
   action_dim: 6          # 5 tickers + 1 cash
   transaction_cost: 0.001  # lambda: 10 bps per unit of weight turnover
-  vol_eps: 1.0e-8
+  vol_eps: 1.0e-6
   vol_window: 21
 
 ppo:
@@ -63,3 +63,4 @@ output:
   weights_file: "output/portfolio_weights.csv"
   curves_file:  "output/training_curves.png"
   vecnormalize_stats: "output/trained_model/vecnormalize_stats.pkl"
+  optuna_storage: "output/optuna_study.db"

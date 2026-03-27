@@ -165,33 +165,41 @@ class TestStep:
 
     def test_reward_formula(self):
         """
-        Verify reward = port_return / (vol + eps) - lambda * turnover.
-        Uses a deterministic single-step episode.
+        Verify reward formula in both regimes:
+          - warm-up (buffer_count < vol_window): reward = port_return - lambda * turnover
+          - steady-state (buffer >= vol_window): reward = port_return / (vol + eps) - lambda * turnover
         """
-        T_ = 3  # _n_steps = T-1 = 2; need at least 2 rows for one valid step
-        # Obs and returns — simple values
+        vol_window = 21
+        T_ = vol_window + 5  # enough steps to exit warm-up
         obs_array    = np.ones((T_, OBS_DIM), dtype=np.float32)
         return_array = np.full((T_, N_TICKERS), 0.01, dtype=np.float32)
 
         env = PortfolioEnv(obs_array, return_array, _make_config())
         env.reset()
 
-        # Apply uniform action [0.5, 0.5, 0.5, 0.5, 0.5, 0.5] → uniform weights
+        # Step 0: warm-up regime (buffer_count=1 < vol_window=21)
         action = np.full(ACTION_DIM, 0.5, dtype=np.float32)
         _, reward, _, _, info = env.step(action)
 
-        # weights should be uniform = 1/6
-        expected_weights = np.full(ACTION_DIM, 1.0 / ACTION_DIM, dtype=np.float32)
-        np.testing.assert_allclose(info["weights"], expected_weights, atol=1e-5)
+        port_return = info["portfolio_return"]
+        turnover    = info["turnover"]
+        lambda_tc   = _make_config()["env"]["transaction_cost"]
 
-        port_return  = info["portfolio_return"]
-        roll_vol     = info["rolling_vol"]
-        turnover     = info["turnover"]
-        lambda_tc    = _make_config()["env"]["transaction_cost"]
-        vol_eps      = _make_config()["env"]["vol_eps"]
+        expected_warmup = port_return - lambda_tc * turnover
+        np.testing.assert_allclose(reward, expected_warmup, atol=1e-6)
 
-        expected_reward = port_return / (roll_vol + vol_eps) - lambda_tc * turnover
-        np.testing.assert_allclose(reward, expected_reward, atol=1e-6)
+        # Run through warm-up into steady-state
+        for _ in range(vol_window):
+            _, reward, _, _, info = env.step(action)
+
+        # Now buffer is full — should use Sharpe-normalised formula
+        port_return = info["portfolio_return"]
+        roll_vol    = info["rolling_vol"]
+        turnover    = info["turnover"]
+        vol_eps     = _make_config()["env"]["vol_eps"]
+
+        expected_steady = port_return / (roll_vol + vol_eps) - lambda_tc * turnover
+        np.testing.assert_allclose(reward, expected_steady, atol=1e-6)
 
     def test_turnover_zero_when_weights_unchanged(self):
         """If action produces the same weights as prev step, turnover ≈ 0."""

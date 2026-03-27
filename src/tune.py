@@ -60,6 +60,9 @@ def objective(
     -------
     float — annualised Sharpe ratio on the validation set (higher is better).
     """
+    import torch
+    torch.set_num_threads(1)
+
     from stable_baselines3.common.monitor import Monitor
     from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
@@ -119,7 +122,7 @@ def objective(
 # Main
 # ---------------------------------------------------------------------------
 
-def main(config_path: str = "config.yaml", n_trials: int = 50) -> dict:
+def main(config_path: str = "config.yaml", n_trials: int | None = None) -> dict:
     """
     Run Optuna hyperparameter search and save best parameters.
 
@@ -169,7 +172,8 @@ def main(config_path: str = "config.yaml", n_trials: int = 50) -> dict:
     val_obs_norm = normalizer.transform(val_obs)
 
     # 2. Run Optuna study -----------------------------------------------------
-    n_trials = int(config.get("tuning", {}).get("n_trials", n_trials))
+    if n_trials is None:
+        n_trials = int(config.get("tuning", {}).get("n_trials", 50))
     seed = int(config.get("training", {}).get("seed", 42))
 
     sampler = optuna.samplers.TPESampler(seed=seed)
@@ -177,7 +181,13 @@ def main(config_path: str = "config.yaml", n_trials: int = 50) -> dict:
         n_startup_trials=10, n_warmup_steps=5,
     )
 
+    storage_path = out_cfg.get("optuna_storage", "output/optuna_study.db")
+    storage = f"sqlite:///{storage_path}"
+
     study = optuna.create_study(
+        study_name="ppo_portfolio",
+        storage=storage,
+        load_if_exists=True,
         direction="maximize",
         sampler=sampler,
         pruner=pruner,

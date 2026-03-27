@@ -34,13 +34,40 @@ src/
   data_loader.py       — load + merge Phase 1/2 features
   feature_engineer.py  — price features, normalisation
   portfolio_env.py     — Gymnasium PortfolioEnv (PPO environment)
+  ppo_agent.py         — PPO factory and training callbacks
   train.py             — PPO training loop
+  tune.py              — Optuna hyperparameter tuning
   evaluate.py          — evaluation against baselines
 tests/
   test_data_loader.py
   test_feature_engineer.py
   test_portfolio_env.py
+  test_ppo_agent.py
   test_evaluate.py
+  test_tune.py
 deps/                  — git submodules (populated by --recurse-submodules)
 output/                — model checkpoints and evaluation artefacts (gitignored)
 ```
+
+## Hyperparameter Tuning
+
+Sequential (single core):
+
+```bash
+python -m src.tune --n-trials 50
+```
+
+Parallel (recommended — open N terminals simultaneously):
+
+```bash
+python -m src.tune --n-trials 13   # terminal 1
+python -m src.tune --n-trials 13   # terminal 2
+python -m src.tune --n-trials 13   # terminal 3
+python -m src.tune --n-trials 13   # terminal 4
+# 52 trials total, each terminal uses 1 CPU core
+```
+
+All processes share a single SQLite study (`output/optuna_study.db`) via Optuna's
+storage backend. Do NOT use `n_jobs > 1` in `study.optimize()` — Optuna's default
+thread-based parallelism is blocked by Python's GIL for CPU-bound SB3 training.
+The multi-terminal approach gives true multiprocessing.

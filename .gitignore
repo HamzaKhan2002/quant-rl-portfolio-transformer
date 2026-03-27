@@ -18,6 +18,7 @@ output/*.json
 output/*.csv
 output/*.png
 output/*.pkl
+output/*.db
 
 # Jupyter notebooks checkpoints
 .ipynb_checkpoints/
