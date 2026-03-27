@@ -64,6 +64,7 @@ def _make_merged_df(dates: list, tickers: list = TICKERS) -> pd.DataFrame:
                 "data_source": "claude",
                 "days_since_filing": 10,
                 "has_sentiment_data": True,
+                "has_x_data": 1,
                 "prob_low": 0.25,
                 "prob_med": 0.50,
                 "prob_high": 0.20,
@@ -162,7 +163,7 @@ class TestBuildObservationMatrix:
     def test_obs_array_shape(self, data):
         merged, pf = data
         obs, ret, dates = build_observation_matrix(merged, pf, TICKERS)
-        assert obs.shape[1] == 74, f"Expected 74 features, got {obs.shape[1]}"
+        assert obs.shape[1] == 79, f"Expected 79 features, got {obs.shape[1]}"
 
     def test_return_array_shape(self, data):
         merged, pf = data
@@ -295,7 +296,7 @@ class TestNormalizer:
         assert not np.isinf(Z).any()
 
     def test_save_and_load_roundtrip(self, tmp_path):
-        X = np.random.default_rng(42).random((50, 74)).astype(np.float32)
+        X = np.random.default_rng(42).random((50, 79)).astype(np.float32)
         n = Normalizer().fit(X)
         path = str(tmp_path / "normalizer.pkl")
         n.save(path)

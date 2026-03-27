@@ -27,7 +27,7 @@ Architecture:
 Usage::
 
     from src.dapo_trainer import DAPOTrainer
-    trainer = DAPOTrainer(obs_dim=74, action_dim=6, config=config, seed=42)
+    trainer = DAPOTrainer(obs_dim=79, action_dim=6, config=config, seed=42)
     trainer.train(train_obs, train_ret, val_obs, val_ret, out_dir="output/dapo")
     action, _ = trainer.predict(obs, deterministic=True)
     trainer.save("output/dapo/policy.pt")

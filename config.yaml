@@ -10,11 +10,11 @@ data:
   regime_path:    "deps/quant-multi-transformer-regimes/output/regime_probs.csv"
 
 # ────────────────────────────────────────────────────────────────────────────
-# Default date splits (Walk-Forward Fold 2 — current production split).
+# Default date splits (Walk-Forward Fold 5 — current production split).
 # Used by train.py / tune.py / evaluate.py when no --fold is specified.
 # ────────────────────────────────────────────────────────────────────────────
 splits:
-  train_start: "2022-01-03"
+  train_start: "2014-01-03"
   train_end:   "2023-12-31"
   val_start:   "2024-01-01"
   val_end:     "2024-12-31"
@@ -24,43 +24,73 @@ splits:
 # ────────────────────────────────────────────────────────────────────────────
 # Walk-Forward Fold Definitions  (used by src/walk_forward.py)
 #
-# DATA AVAILABILITY (critical constraint):
-#   Sentiment data  : 2022-01-03 → 2025-12-31  [LLM-generated, Phase 2]
-#   Regime data     : 2019-04-03 → 2026-02-27  [Transformer classifier, Phase 1]
+# DATA AVAILABILITY (fully extended as of this revision):
+#   Sentiment data  : 2014-01-02 → 2025-12-31  [Phase 2, extended from 2014]
+#     - EDGAR 10-K filings: 2014–2025 (EDGAR provides back to 1993)
+#     - X/Grok social data: 2022–2025 only (has_x_data=0 flag for pre-2022)
+#   Regime data     : ~2014-03-xx → 2026-02-27  [Phase 1, extended to 2014]
 #   Price data      : fetched from yfinance, unlimited lookback
 #
-# CONSEQUENCE: The full 74-dim model (price + sentiment + regime) can only be
-# trained on data from 2022 onwards.  With ≥1yr train + 1yr val + 1yr test,
-# only 2 non-overlapping folds are feasible for the full model.
+# CONSEQUENCE: The full 79-dim model can now be trained from 2014 onwards,
+# enabling 5 non-overlapping full-model folds covering all major market
+# regimes: COVID crash (2020), bear market (2022), recovery (2023),
+# AI bull run (2024), and 2025 (out-of-sample).
 #
-# A third fold ("R") uses price+regime only (34-dim, no sentiment) to enable
-# out-of-sample evaluation on the 2022 bear market (-33% NASDAQ), which is
-# entirely in the training window of both full-model folds.
-#
-# REGIME SIGNAL NOTE:
-#   prob_crash is practically zero (<0.005) in all years.  The 2022 bear
-#   market is labelled medium_vol, not high_vol or crash, by the Phase 1
-#   classifier.  Regime-conditional analysis focuses on low_vol / medium_vol
-#   distinction and cash allocation differences.
+# REGIME SIGNAL NOTE (Phase 1 retrain on 2014–2025):
+#   Including COVID 2020 enables the HMM to learn all 4 states.  Fold 1
+#   (test 2020) exercises the crash and high_vol regimes.
 # ────────────────────────────────────────────────────────────────────────────
 evaluation:
   folds:
     - fold_id: 1
       model_type: "full"
-      obs_dim: 74
-      description: "Full model (74-dim), test year 2024 (bull market)"
-      train_start: "2022-01-03"
+      obs_dim: 79
+      description: "Full model (79-dim), test year 2020 (COVID crash)"
+      train_start: "2014-01-03"
+      train_end:   "2018-12-31"
+      val_start:   "2019-01-01"
+      val_end:     "2019-12-31"
+      test_start:  "2020-01-01"
+      test_end:    "2020-12-31"
+
+    - fold_id: 2
+      model_type: "full"
+      obs_dim: 79
+      description: "Full model (79-dim), test year 2022 (bear market, -33% NASDAQ)"
+      train_start: "2014-01-03"
+      train_end:   "2020-12-31"
+      val_start:   "2021-01-01"
+      val_end:     "2021-12-31"
+      test_start:  "2022-01-01"
+      test_end:    "2022-12-31"
+
+    - fold_id: 3
+      model_type: "full"
+      obs_dim: 79
+      description: "Full model (79-dim), test year 2023 (recovery)"
+      train_start: "2014-01-03"
+      train_end:   "2021-12-31"
+      val_start:   "2022-01-01"
+      val_end:     "2022-12-31"
+      test_start:  "2023-01-01"
+      test_end:    "2023-12-31"
+
+    - fold_id: 4
+      model_type: "full"
+      obs_dim: 79
+      description: "Full model (79-dim), test year 2024 (AI bull run)"
+      train_start: "2014-01-03"
       train_end:   "2022-12-31"
       val_start:   "2023-01-01"
       val_end:     "2023-12-31"
       test_start:  "2024-01-01"
       test_end:    "2024-12-31"
 
-    - fold_id: 2
+    - fold_id: 5
       model_type: "full"
-      obs_dim: 74
-      description: "Full model (74-dim), test year 2025 [default split]"
-      train_start: "2022-01-03"
+      obs_dim: 79
+      description: "Full model (79-dim), test year 2025 [default split]"
+      train_start: "2014-01-03"
       train_end:   "2023-12-31"
       val_start:   "2024-01-01"
       val_end:     "2024-12-31"
@@ -84,9 +114,9 @@ evaluation:
 
 env:
   n_tickers: 5
-  n_per_ticker_features: 14
+  n_per_ticker_features: 15
   n_shared_features: 4
-  obs_dim: 74            # 5 * 14 + 4  (full model)
+  obs_dim: 79            # 5 * 15 + 4  (full model: 14 original + has_x_data)
   action_dim: 6          # 5 tickers + 1 cash
   transaction_cost: 0.001  # lambda_tc: 10 bps per unit weight turnover
   vol_eps:    1.0e-6

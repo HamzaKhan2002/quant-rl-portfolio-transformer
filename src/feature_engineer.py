@@ -7,19 +7,19 @@ Responsibilities:
   2. compute_price_features() — log returns (1d / 5d / 21d), realised vol (21d),
                                 simple returns (used for portfolio reward)
   3. build_observation_matrix() — join sentiment+regime + price features,
-                                  pivot to (T, 74) obs array and (T, 5) forward
+                                  pivot to (T, 79) obs array and (T, 5) forward
                                   return array ready for PortfolioEnv
   4. Normalizer               — z-score fitted on train split only
 
-Observation layout (74 features, ordered):
-  [AAPL×14, MSFT×14, GOOGL×14, AMZN×14, TSLA×14, prob_low, prob_med,
+Observation layout (79 features, ordered):
+  [AAPL×15, MSFT×15, GOOGL×15, AMZN×15, TSLA×15, prob_low, prob_med,
    prob_high, prob_crash]
 
-Per-ticker features (14, in order):
+Per-ticker features (15, in order):
   log_return_1d, log_return_5d, log_return_21d, realized_vol_21d,
   tone_score, risk_score, growth_outlook, x_sentiment, hype_velocity,
   trending_score, sentiment_velocity, risk_momentum,
-  days_since_filing, has_sentiment_data
+  days_since_filing, has_sentiment_data, has_x_data
 """
 
 from __future__ import annotations
@@ -56,6 +56,7 @@ TICKER_FEATURES: List[str] = [
     "risk_momentum",
     "days_since_filing",
     "has_sentiment_data",
+    "has_x_data",         # 1 if real X/Twitter data exists for this year, 0 otherwise
 ]
 
 SHARED_FEATURES: List[str] = ["prob_low", "prob_med", "prob_high", "prob_crash"]
@@ -202,9 +203,9 @@ def build_observation_matrix(
 
     Returns
     -------
-    obs_array : np.ndarray, shape (T, 74)
+    obs_array : np.ndarray, shape (T, 79)
         Observation matrix.  Column layout:
-          [AAPL×14 | MSFT×14 | GOOGL×14 | AMZN×14 | TSLA×14 | regime×4]
+          [AAPL×15 | MSFT×15 | GOOGL×15 | AMZN×15 | TSLA×15 | regime×4]
     forward_return_array : np.ndarray, shape (T, 5)
         Per-ticker simple forward returns aligned with obs_array.
         ``forward_return_array[t, i]`` = simple return of ticker i from
@@ -218,8 +219,12 @@ def build_observation_matrix(
     # Drop string / categorical columns not used as numeric features
     df = df.drop(columns=[c for c in _DROP_COLS if c in df.columns])
 
-    # Cast bool → int for has_sentiment_data
+    # Cast bool → int for has_sentiment_data and has_x_data
     df["has_sentiment_data"] = df["has_sentiment_data"].astype(int)
+    # has_x_data may be absent (older sentiment CSV without extended data)
+    if "has_x_data" not in df.columns:
+        df["has_x_data"] = 0
+    df["has_x_data"] = df["has_x_data"].astype(int)
 
     # Ensure days_since_filing is int64 (Windows dtype safety — CONTEXT.md §5.1)
     df["days_since_filing"] = df["days_since_filing"].astype("int64")
@@ -268,11 +273,11 @@ def build_observation_matrix(
     )
     common_dates = common_dates.sort_values()
 
-    ticker_matrix = ticker_pivot.loc[common_dates].values.astype(np.float32)    # (T, 70)
+    ticker_matrix = ticker_pivot.loc[common_dates].values.astype(np.float32)    # (T, 75)
     shared_matrix = shared_pivot.loc[common_dates].values.astype(np.float32)    # (T, 4)
     return_matrix  = forward_returns.loc[common_dates].values.astype(np.float32) # (T, 5)
 
-    obs_array = np.hstack([ticker_matrix, shared_matrix])  # (T, 74)
+    obs_array = np.hstack([ticker_matrix, shared_matrix])  # (T, 79)
 
     # Replace any remaining NaN / Inf with 0.0 (safety guard)
     obs_array     = np.nan_to_num(obs_array,     nan=0.0, posinf=0.0, neginf=0.0)

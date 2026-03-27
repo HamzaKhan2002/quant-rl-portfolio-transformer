@@ -1,17 +1,19 @@
 """
 walk_forward.py — Walk-forward cross-validation for the PPO portfolio agent.
 
-Three evaluation folds are defined in config.yaml under ``evaluation.folds``:
+Six evaluation folds are defined in config.yaml under ``evaluation.folds``:
 
-  Fold 1 — Full model (74-dim): train 2022, val 2023, test 2024 (bull market)
-  Fold 2 — Full model (74-dim): train 2022-2023, val 2024, test 2025 [default]
+  Fold 1 — Full model (74-dim): train 2014-2018, val 2019, test 2020 (COVID crash)
+  Fold 2 — Full model (74-dim): train 2014-2020, val 2021, test 2022 (bear market)
+  Fold 3 — Full model (74-dim): train 2014-2021, val 2022, test 2023 (recovery)
+  Fold 4 — Full model (74-dim): train 2014-2022, val 2023, test 2024 (AI bull run)
+  Fold 5 — Full model (74-dim): train 2014-2023, val 2024, test 2025 [default]
   Fold R — Regime-only (34-dim): train 2019-2021, val 2022-H1, test 2022-H2
-            (2022 NASDAQ bear market: -33% peak-to-trough)
 
+Sentiment data now extends back to 2014 (EDGAR 10-K filings); X/Grok social
+data is available from 2022 only (has_x_data=0 flag for pre-2022 rows).
 ``Fold R`` uses a reduced 34-dim observation (price + regime, no sentiment)
-because sentiment data is only available from 2022-01-03.  This fold provides
-an out-of-sample test in a genuine bear market that is entirely inside the
-training window of both full-model folds.
+to provide a second evaluation on the 2022 bear market at half-year granularity.
 
 Usage::
 

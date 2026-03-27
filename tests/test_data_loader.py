@@ -34,6 +34,7 @@ SENTIMENT_COLS = [
     "Date", "Ticker", "tone_score", "risk_score", "growth_outlook",
     "x_sentiment", "hype_velocity", "trending_score", "sentiment_velocity",
     "risk_momentum", "data_source", "days_since_filing", "has_sentiment_data",
+    "has_x_data",
 ]
 REGIME_COLS = ["Date", "prob_low", "prob_med", "prob_high", "prob_crash", "regime_label"]
 
@@ -41,6 +42,7 @@ EXPECTED_MERGED_COLS = [
     "Date", "Ticker", "tone_score", "risk_score", "growth_outlook",
     "x_sentiment", "hype_velocity", "trending_score", "sentiment_velocity",
     "risk_momentum", "data_source", "days_since_filing", "has_sentiment_data",
+    "has_x_data",
     "prob_low", "prob_med", "prob_high", "prob_crash",
     # regime_label comes from Phase 1 CSV; allowed but not used as a feature
 ]

@@ -21,7 +21,7 @@ from src.portfolio_env import PortfolioEnv  # noqa: E402
 
 N_TICKERS = 5
 ACTION_DIM = 6   # 5 tickers + 1 cash
-OBS_DIM    = 74
+OBS_DIM    = 79
 T          = 50  # number of time steps in synthetic episode
 
 

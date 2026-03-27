@@ -23,7 +23,7 @@ from src.portfolio_env import PortfolioEnv
 
 N_TICKERS = 5
 ACTION_DIM = 6
-OBS_DIM = 74
+OBS_DIM = 79
 T = 50
 
 

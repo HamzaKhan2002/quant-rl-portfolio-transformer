@@ -22,7 +22,7 @@ from src.tune import objective
 # ---------------------------------------------------------------------------
 
 N_TICKERS = 5
-OBS_DIM = 74
+OBS_DIM = 79
 T_TRAIN = 100
 T_VAL = 50
 
