@@ -3,11 +3,11 @@ walk_forward.py — Walk-forward cross-validation for the PPO portfolio agent.
 
 Six evaluation folds are defined in config.yaml under ``evaluation.folds``:
 
-  Fold 1 — Full model (79-dim): train 2014-2018, val 2019, test 2020 (COVID crash)
-  Fold 2 — Full model (79-dim): train 2014-2020, val 2021, test 2022 (bear market)
-  Fold 3 — Full model (79-dim): train 2014-2021, val 2022, test 2023 (recovery)
-  Fold 4 — Full model (79-dim): train 2014-2022, val 2023, test 2024 (AI bull run)
-  Fold 5 — Full model (79-dim): train 2014-2023, val 2024, test 2025 [default]
+  Fold 1 — Full model (94-dim): train 2014-2018, val 2019, test 2020 (COVID crash)
+  Fold 2 — Full model (94-dim): train 2014-2020, val 2021, test 2022 (bear market)
+  Fold 3 — Full model (94-dim): train 2014-2021, val 2022, test 2023 (recovery)
+  Fold 4 — Full model (94-dim): train 2014-2022, val 2023, test 2024 (AI bull run)
+  Fold 5 — Full model (94-dim): train 2014-2023, val 2024, test 2025 [default]
   Fold R — Regime-only (34-dim): train 2019-2021, val 2022-H1, test 2022-H2
 
 Sentiment data now extends back to 2014 (EDGAR 10-K filings); X/Grok social
@@ -380,6 +380,9 @@ def train_fold_seed(
     seed_path = str(Path(fold_out_dir) / f"best_model_seed_{seed}.zip")
     shutil.copy2(str(best_path), seed_path)
 
+    # --- Clean up training env (prevents SubprocVecEnv zombie processes) -----
+    train_env.close()
+
     return model
 
 
@@ -478,6 +481,105 @@ def _max_drawdown(r: np.ndarray) -> float:
     cum = np.cumprod(1.0 + r)
     peak = np.maximum.accumulate(cum)
     return float(((peak - cum) / peak).max())
+
+
+# ---------------------------------------------------------------------------
+# Baseline strategies
+# ---------------------------------------------------------------------------
+
+def _compute_baselines(
+    test_ret: np.ndarray,
+    n_tickers: int,
+) -> Dict[str, Dict[str, float]]:
+    """
+    Compute simple baseline strategies on test returns.
+
+    Strategies:
+      - ew_buy_hold:  Equal-weight buy-and-hold (1/n_tickers each, no cash)
+      - ew_monthly:   Equal-weight, rebalanced monthly (~21 trading days)
+      - sixty_forty:  60% equal-weight equities + 40% cash (0% return),
+                      rebalanced monthly
+
+    Parameters
+    ----------
+    test_ret : np.ndarray, shape (T, n_tickers)
+        Daily forward returns per ticker.
+    n_tickers : int
+
+    Returns
+    -------
+    dict mapping strategy name to {sharpe, sortino, max_drawdown,
+    annualised_return, calmar}.
+    """
+    T = test_ret.shape[0]
+    results: Dict[str, Dict[str, float]] = {}
+
+    # --- Equal-weight buy-and-hold -------------------------------------------
+    w = np.ones(n_tickers, dtype=np.float64) / n_tickers
+    ew_bh_returns = np.zeros(T, dtype=np.float64)
+    for t in range(T):
+        ew_bh_returns[t] = float(np.dot(w, test_ret[t]))
+        # Drift weights with returns (buy-and-hold: no rebalance)
+        w = w * (1.0 + test_ret[t])
+        w_sum = w.sum()
+        if w_sum > 1e-10:
+            w = w / w_sum
+
+    results["ew_buy_hold"] = _baseline_metrics(ew_bh_returns)
+
+    # --- Equal-weight monthly rebalance --------------------------------------
+    w = np.ones(n_tickers, dtype=np.float64) / n_tickers
+    ew_monthly_returns = np.zeros(T, dtype=np.float64)
+    for t in range(T):
+        ew_monthly_returns[t] = float(np.dot(w, test_ret[t]))
+        w = w * (1.0 + test_ret[t])
+        w_sum = w.sum()
+        if w_sum > 1e-10:
+            w = w / w_sum
+        # Rebalance every ~21 trading days
+        if (t + 1) % 21 == 0:
+            w = np.ones(n_tickers, dtype=np.float64) / n_tickers
+
+    results["ew_monthly"] = _baseline_metrics(ew_monthly_returns)
+
+    # --- Simulated 60/40 (60% EW equities + 40% cash at 0%) -----------------
+    eq_frac = 0.6
+    cash_frac = 0.4
+    w_eq = np.ones(n_tickers, dtype=np.float64) * (eq_frac / n_tickers)
+    sixty_forty_returns = np.zeros(T, dtype=np.float64)
+    for t in range(T):
+        # Portfolio return = equity portion + cash portion (cash return = 0)
+        sixty_forty_returns[t] = float(np.dot(w_eq, test_ret[t]))
+        # Drift equity weights
+        w_eq = w_eq * (1.0 + test_ret[t])
+        total = w_eq.sum() + cash_frac  # cash doesn't grow
+        if total > 1e-10:
+            w_eq = w_eq / total * (w_eq.sum() / total)
+            cash_frac = 1.0 - w_eq.sum()
+        # Rebalance monthly to 60/40
+        if (t + 1) % 21 == 0:
+            w_eq = np.ones(n_tickers, dtype=np.float64) * (0.6 / n_tickers)
+            cash_frac = 0.4
+
+    results["sixty_forty_sim"] = _baseline_metrics(sixty_forty_returns)
+
+    return results
+
+
+def _baseline_metrics(daily_returns: np.ndarray) -> Dict[str, float]:
+    """Compute summary metrics for a baseline strategy."""
+    ann_ret = _annualised_return(daily_returns)
+    sharpe  = _annualised_sharpe(daily_returns)
+    sortino = _annualised_sortino(daily_returns)
+    mdd     = _max_drawdown(daily_returns)
+    calmar  = ann_ret / mdd if mdd > 1e-10 else float("inf")
+    return {
+        "sharpe":           round(sharpe,  6),
+        "sortino":          round(sortino, 6),
+        "max_drawdown":     round(mdd,     6),
+        "annualised_return": round(ann_ret, 6),
+        "calmar":           round(calmar,  6),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -595,6 +697,13 @@ def run_fold(
           f"AnnRet: {ensemble_metrics['annualised_return']:.4f}")
 
     # --- Assemble fold result -------------------------------------------------
+    # Compute baselines on the same test data for comparison
+    baselines = _compute_baselines(test_ret, n_tickers=len(tickers))
+    print("\n  Baselines:")
+    for bname, bm in baselines.items():
+        print(f"    {bname:20s}  Sharpe={bm['sharpe']:.4f}  MDD={bm['max_drawdown']:.4f}  "
+              f"AnnRet={bm['annualised_return']:.4f}")
+
     result = {
         "fold_id":               fold_id,
         "description":           fold_cfg.get("description", ""),
@@ -614,6 +723,7 @@ def run_fold(
         "annualised_return":     ensemble_metrics["annualised_return"],
         "calmar":                ensemble_metrics["calmar"],
         "mean_daily_turnover":   ensemble_metrics["mean_daily_turnover"],
+        "baselines":             baselines,
     }
 
     # --- Save fold metrics to JSON -------------------------------------------
@@ -638,6 +748,7 @@ def main(
     seeds: Optional[List[int]] = None,
     use_tuned: bool = False,
     output_root: str = "output/walk_forward",
+    total_timesteps_override: Optional[int] = None,
 ) -> Dict:
     """
     Run walk-forward cross-validation across all configured folds.
@@ -653,6 +764,8 @@ def main(
         Load hyperparameters from output/best_hparams.yaml.
     output_root : str
         Base directory for fold outputs.
+    total_timesteps_override : int or None
+        Override ppo.total_timesteps in config.
 
     Returns
     -------
@@ -661,6 +774,8 @@ def main(
     from src.data_loader import load_config
 
     config = load_config(config_path)
+    if total_timesteps_override is not None:
+        config["ppo"]["total_timesteps"] = total_timesteps_override
     if seeds is None:
         seeds = [int(config["training"]["seed"])]
 
@@ -716,6 +831,8 @@ if __name__ == "__main__":
                         help="Training seeds (e.g. --seeds 42 1 7 2026)")
     parser.add_argument("--use-tuned", action="store_true",
                         help="Load hyperparameters from output/best_hparams.yaml")
+    parser.add_argument("--total-timesteps", type=int, default=None,
+                        help="Override ppo.total_timesteps (e.g. 200000)")
     parser.add_argument("--output-root", default="output/walk_forward")
     args = parser.parse_args()
 
@@ -725,4 +842,5 @@ if __name__ == "__main__":
         seeds=args.seeds,
         use_tuned=args.use_tuned,
         output_root=args.output_root,
+        total_timesteps_override=args.total_timesteps,
     )

@@ -532,6 +532,7 @@ class DAPOTrainer:
         timesteps_done = 0
         epoch = 0
         T_train = train_obs.shape[0] - 1
+        next_eval_at = eval_freq
 
         print(f"[DAPO] Starting training | total_ts={self.total_timesteps:,} "
               f"| T_train={T_train} | K={self.K}")
@@ -569,8 +570,9 @@ class DAPOTrainer:
             timesteps_done += T_train
             epoch += 1
 
-            # Periodic evaluation
-            if timesteps_done >= eval_freq * epoch or timesteps_done >= self.total_timesteps:
+            # Periodic evaluation (counter-based: every eval_freq timesteps)
+            if timesteps_done >= next_eval_at or timesteps_done >= self.total_timesteps:
+                next_eval_at += eval_freq
                 val_sharpe = _eval_sharpe(
                     self.policy, val_obs, val_ret,
                     self.n_tickers, self.max_weight,

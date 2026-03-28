@@ -44,8 +44,8 @@ evaluation:
   folds:
     - fold_id: 1
       model_type: "full"
-      obs_dim: 79
-      description: "Full model (79-dim), test year 2020 (COVID crash)"
+      obs_dim: 94
+      description: "Full model (94-dim), test year 2020 (COVID crash)"
       train_start: "2014-01-03"
       train_end:   "2018-12-31"
       val_start:   "2019-01-01"
@@ -55,8 +55,8 @@ evaluation:
 
     - fold_id: 2
       model_type: "full"
-      obs_dim: 79
-      description: "Full model (79-dim), test year 2022 (bear market, -33% NASDAQ)"
+      obs_dim: 94
+      description: "Full model (94-dim), test year 2022 (bear market, -33% NASDAQ)"
       train_start: "2014-01-03"
       train_end:   "2020-12-31"
       val_start:   "2021-01-01"
@@ -66,8 +66,8 @@ evaluation:
 
     - fold_id: 3
       model_type: "full"
-      obs_dim: 79
-      description: "Full model (79-dim), test year 2023 (recovery)"
+      obs_dim: 94
+      description: "Full model (94-dim), test year 2023 (recovery)"
       train_start: "2014-01-03"
       train_end:   "2021-12-31"
       val_start:   "2022-01-01"
@@ -77,8 +77,8 @@ evaluation:
 
     - fold_id: 4
       model_type: "full"
-      obs_dim: 79
-      description: "Full model (79-dim), test year 2024 (AI bull run)"
+      obs_dim: 94
+      description: "Full model (94-dim), test year 2024 (AI bull run)"
       train_start: "2014-01-03"
       train_end:   "2022-12-31"
       val_start:   "2023-01-01"
@@ -88,8 +88,8 @@ evaluation:
 
     - fold_id: 5
       model_type: "full"
-      obs_dim: 79
-      description: "Full model (79-dim), test year 2025 [default split]"
+      obs_dim: 94
+      description: "Full model (94-dim), test year 2025 [default split]"
       train_start: "2014-01-03"
       train_end:   "2023-12-31"
       val_start:   "2024-01-01"
@@ -114,9 +114,9 @@ evaluation:
 
 env:
   n_tickers: 5
-  n_per_ticker_features: 15
+  n_per_ticker_features: 18
   n_shared_features: 4
-  obs_dim: 79            # 5 * 15 + 4  (full model: 14 original + has_x_data)
+  obs_dim: 94            # 5 * 18 + 4  (18 per-ticker incl. trend features)
   action_dim: 6          # 5 tickers + 1 cash
   transaction_cost: 0.001  # lambda_tc: 10 bps per unit weight turnover
   vol_eps:    1.0e-6

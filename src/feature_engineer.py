@@ -5,21 +5,22 @@ construction, and z-score normalization.
 Responsibilities:
   1. fetch_price_data()      — download OHLCV data via yfinance
   2. compute_price_features() — log returns (1d / 5d / 21d), realised vol (21d),
-                                simple returns (used for portfolio reward)
+                                trend features, simple returns (portfolio reward)
   3. build_observation_matrix() — join sentiment+regime + price features,
-                                  pivot to (T, 79) obs array and (T, 5) forward
+                                  pivot to (T, 94) obs array and (T, 5) forward
                                   return array ready for PortfolioEnv
   4. Normalizer               — z-score fitted on train split only
 
-Observation layout (79 features, ordered):
-  [AAPL×15, MSFT×15, GOOGL×15, AMZN×15, TSLA×15, prob_low, prob_med,
+Observation layout (94 features, ordered):
+  [AAPL×18, MSFT×18, GOOGL×18, AMZN×18, TSLA×18, prob_low, prob_med,
    prob_high, prob_crash]
 
-Per-ticker features (15, in order):
+Per-ticker features (18, in order):
   log_return_1d, log_return_5d, log_return_21d, realized_vol_21d,
   tone_score, risk_score, growth_outlook, x_sentiment, hype_velocity,
   trending_score, sentiment_velocity, risk_momentum,
-  days_since_filing, has_sentiment_data, has_x_data
+  days_since_filing, has_sentiment_data, has_x_data,
+  sma_ratio_50_200, sma_dist_200, drawdown_from_ath
 """
 
 from __future__ import annotations
@@ -56,7 +57,10 @@ TICKER_FEATURES: List[str] = [
     "risk_momentum",
     "days_since_filing",
     "has_sentiment_data",
-    "has_x_data",         # 1 if real X/Twitter data exists for this year, 0 otherwise
+    "has_x_data",           # 1 if real X/Twitter data exists for this year, 0 otherwise
+    "sma_ratio_50_200",     # SMA(50)/SMA(200) - 1: trend direction (golden/death cross)
+    "sma_dist_200",         # price/SMA(200) - 1: distance from 200-day moving average
+    "drawdown_from_ath",    # (price - 252d rolling max) / 252d rolling max
 ]
 
 SHARED_FEATURES: List[str] = ["prob_low", "prob_med", "prob_high", "prob_crash"]
@@ -94,8 +98,9 @@ def fetch_price_data(
     if yf is None:
         raise ImportError("yfinance is required for fetch_price_data()")
 
-    # Download with a 30-day buffer so rolling-21 is valid at the first date
-    buffer_start = (pd.Timestamp(start_date) - pd.offsets.BDay(30)).strftime("%Y-%m-%d")
+    # Download with a 260-day buffer so SMA(200) and 252-day rolling max are
+    # valid at the first date (200 trading days + margin for holidays)
+    buffer_start = (pd.Timestamp(start_date) - pd.offsets.BDay(260)).strftime("%Y-%m-%d")
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -155,6 +160,11 @@ def compute_price_features(
         log_ret = np.log(s / s.shift(1))
         simple_ret = (s / s.shift(1)) - 1.0
 
+        # Trend features
+        sma_50  = s.rolling(50).mean()
+        sma_200 = s.rolling(200).mean()
+        rolling_max_252 = s.rolling(252).max()
+
         df_t = pd.DataFrame({
             "Date": s.index,
             "Ticker": ticker,
@@ -163,6 +173,9 @@ def compute_price_features(
             "log_return_21d": np.log(s / s.shift(21)).values,
             "realized_vol_21d": log_ret.rolling(21).std().values,
             "simple_return_1d": simple_ret.values,
+            "sma_ratio_50_200": (sma_50 / sma_200 - 1.0).values,
+            "sma_dist_200": (s / sma_200 - 1.0).values,
+            "drawdown_from_ath": ((s - rolling_max_252) / rolling_max_252).values,
         })
 
         # Fill NaN from rolling warm-up with 0.0
@@ -203,9 +216,9 @@ def build_observation_matrix(
 
     Returns
     -------
-    obs_array : np.ndarray, shape (T, 79)
+    obs_array : np.ndarray, shape (T, 94)
         Observation matrix.  Column layout:
-          [AAPL×15 | MSFT×15 | GOOGL×15 | AMZN×15 | TSLA×15 | regime×4]
+          [AAPL×18 | MSFT×18 | GOOGL×18 | AMZN×18 | TSLA×18 | regime×4]
     forward_return_array : np.ndarray, shape (T, 5)
         Per-ticker simple forward returns aligned with obs_array.
         ``forward_return_array[t, i]`` = simple return of ticker i from
@@ -273,11 +286,11 @@ def build_observation_matrix(
     )
     common_dates = common_dates.sort_values()
 
-    ticker_matrix = ticker_pivot.loc[common_dates].values.astype(np.float32)    # (T, 75)
+    ticker_matrix = ticker_pivot.loc[common_dates].values.astype(np.float32)    # (T, 90)
     shared_matrix = shared_pivot.loc[common_dates].values.astype(np.float32)    # (T, 4)
     return_matrix  = forward_returns.loc[common_dates].values.astype(np.float32) # (T, 5)
 
-    obs_array = np.hstack([ticker_matrix, shared_matrix])  # (T, 79)
+    obs_array = np.hstack([ticker_matrix, shared_matrix])  # (T, 94)
 
     # Replace any remaining NaN / Inf with 0.0 (safety guard)
     obs_array     = np.nan_to_num(obs_array,     nan=0.0, posinf=0.0, neginf=0.0)
