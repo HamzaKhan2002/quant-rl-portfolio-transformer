@@ -139,8 +139,8 @@ env:
 
   # ── CVaR Lagrangian (Phase 4, Task 3) ──────────────────────────────────────
   cvar_alpha:       0.05   # 5th-percentile tail (CVaR_5%)
-  cvar_threshold:   0.02   # maximum tolerated daily CVaR loss rate (2%)
-  cvar_lr:          0.001  # Lagrangian dual ascent step size (slow for stability)
+  cvar_threshold:   0.015  # maximum tolerated daily CVaR loss rate (1.5%, tighter)
+  cvar_lr:          0.005  # Lagrangian dual ascent step size (faster convergence)
   lambda_cvar_init: 0.0    # initial Lagrangian multiplier (starts unconstrained)
   var_alpha_init:  -100.0  # initial VaR estimate (−100 = never triggers)
 

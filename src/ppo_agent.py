@@ -24,6 +24,7 @@ except ImportError as exc:
     ) from exc
 
 from src.portfolio_env import PortfolioEnv
+from src.cvar_callback import CVaRLagrangianCallback
 
 
 # ---------------------------------------------------------------------------
@@ -167,4 +168,5 @@ def make_callbacks(
         verbose    = 1,
     )
 
-    return [eval_cb, checkpoint_cb]
+    cvar_cb = CVaRLagrangianCallback(config)
+    return [eval_cb, checkpoint_cb, cvar_cb]
