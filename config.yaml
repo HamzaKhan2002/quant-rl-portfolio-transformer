@@ -170,6 +170,13 @@ training:
   clip_reward: 10.0
   n_envs: 4
 
+dapo:
+  total_timesteps: 100000   # shorter budget for DAPO convergence tests
+  K: 8                       # group size (samples per timestep)
+  eps_low: 0.1               # asymmetric clip lower
+  eps_high: 0.2              # asymmetric clip upper
+  filter_min_std: 0.0001     # lowered: constrained softmax compresses action space
+
 tuning:
   n_trials: 50
   tuning_timesteps: 100000

@@ -28,3 +28,6 @@ output/*.db
 Thumbs.db
 .idea/
 .vscode/
+
+# Environment secrets
+.env

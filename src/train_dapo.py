@@ -81,6 +81,8 @@ def main(
             "train_end":   fold_cfg["train_end"],
             "val_start":   fold_cfg["val_start"],
             "val_end":     fold_cfg["val_end"],
+            "test_start":  fold_cfg.get("test_start", fold_cfg["val_end"]),
+            "test_end":    fold_cfg.get("test_end",   fold_cfg["val_end"]),
         }
         # Override obs_dim if the fold specifies one
         if "obs_dim" in fold_cfg:
